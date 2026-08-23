@@ -1,0 +1,857 @@
+"""
+Discord Voice Cloner + Soundboard  (v2)
+=======================================
+
+Tabs:
+  1. Capture      - rolling buffer + hotkey clip grab + Whisper auto-transcribe
+  2. Soundboard   - mic passthrough + play sounds into a virtual cable + gain/"peak"
+  3. Training     - export Piper-ready dataset per speaker (GPU training = Colab)
+  4. Settings     - git auto-update, device memory, about
+
+REQUIREMENTS
+  pip install faster-whisper            (already installed)
+  VB-CABLE (free) for the soundboard:   https://vb-audio.com/Cable/
+      -> In Discord: Settings > Voice & Video > Input Device = "CABLE Output"
+      -> Your mic ONLY reaches Discord while the Soundboard mixer is running.
+  git installed + this folder cloned from your repo (for auto-update)
+
+NOTES
+  * Stereo Mix mixes ALL system audio - capture clean, single-speaker moments.
+  * Only clone voices of people who've agreed to it.
+  * Real-time mixing in Python has some latency; if it's too high, dedicated
+    tools like VB-Audio Voicemeeter do this more robustly.
+"""
+
+import os
+import sys
+import json
+import time
+import wave
+import queue
+import shutil
+import threading
+import datetime
+import subprocess
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog, filedialog
+from collections import deque
+
+import numpy as np
+import pyaudio
+
+try:
+    import winsound
+    HAVE_WINSOUND = True
+except ImportError:
+    HAVE_WINSOUND = False
+
+# ----------------------------------------------------------------------------
+# Config
+# ----------------------------------------------------------------------------
+RATE = 48000
+CHUNK = 1024
+FORMAT = pyaudio.paInt16
+SAMPWIDTH = 2
+DEFAULT_BUFFER_SECONDS = 15
+CLIPS_DIR = "clips"
+INDEX_PATH = os.path.join(CLIPS_DIR, "index.json")
+SETTINGS_PATH = "settings.json"
+CAPTURE_HOTKEY = "<ctrl>+<shift>+c"
+WHISPER_MODEL_SIZE = "base"
+INT16_MAX = 32767
+
+os.makedirs(CLIPS_DIR, exist_ok=True)
+
+
+# ----------------------------------------------------------------------------
+# Small JSON helpers
+# ----------------------------------------------------------------------------
+def _load_json(path, default):
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return default
+    return default
+
+
+def _save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def load_index():
+    return _load_json(INDEX_PATH, [])
+
+
+def save_index(index):
+    _save_json(INDEX_PATH, index)
+
+
+def load_settings():
+    return _load_json(SETTINGS_PATH, {"auto_update": True, "sounds": [], "gain": 100})
+
+
+def save_settings(s):
+    _save_json(SETTINGS_PATH, s)
+
+
+# ----------------------------------------------------------------------------
+# Git auto-update
+# ----------------------------------------------------------------------------
+def git_available():
+    return shutil.which("git") is not None and os.path.isdir(".git")
+
+
+def git_current_commit():
+    try:
+        out = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"],
+                                      stderr=subprocess.DEVNULL, text=True)
+        return out.strip()
+    except Exception:
+        return "unknown"
+
+
+def git_pull():
+    """Returns (changed: bool, message: str)."""
+    if not git_available():
+        return False, "Not a git clone (or git not installed)."
+    try:
+        out = subprocess.check_output(["git", "pull", "--ff-only"],
+                                      stderr=subprocess.STDOUT, text=True)
+        changed = "Already up to date" not in out
+        return changed, out.strip()
+    except subprocess.CalledProcessError as e:
+        return False, f"git pull failed: {e.output}"
+
+
+# ----------------------------------------------------------------------------
+# Audio conversion helpers
+# ----------------------------------------------------------------------------
+def bytes_to_mono_f32(data, channels):
+    arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+    if channels > 1:
+        arr = arr.reshape(-1, channels).mean(axis=1)
+    return arr
+
+
+def mono_f32_to_stereo_int16_bytes(mono):
+    mono = np.clip(mono, -INT16_MAX, INT16_MAX).astype(np.int16)
+    stereo = np.stack([mono, mono], axis=1).ravel()
+    return stereo.tobytes()
+
+
+# ----------------------------------------------------------------------------
+# Capture engine (rolling ring buffer + hotkey save)
+# ----------------------------------------------------------------------------
+class AudioEngine:
+    def __init__(self, event_queue):
+        self.event_queue = event_queue
+        self.pa = pyaudio.PyAudio()
+        self.stream = None
+        self.capture_thread = None
+        self.running = False
+        self.channels = 2
+        self.buffer_seconds = DEFAULT_BUFFER_SECONDS
+        self.ring = deque()
+        self._lock = threading.Lock()
+
+    def list_input_devices(self):
+        devs = []
+        for i in range(self.pa.get_device_count()):
+            info = self.pa.get_device_info_by_index(i)
+            if info.get("maxInputChannels", 0) > 0:
+                devs.append((i, info["name"], int(info["maxInputChannels"])))
+        return devs
+
+    def list_output_devices(self):
+        devs = []
+        for i in range(self.pa.get_device_count()):
+            info = self.pa.get_device_info_by_index(i)
+            if info.get("maxOutputChannels", 0) > 0:
+                devs.append((i, info["name"], int(info["maxOutputChannels"])))
+        return devs
+
+    def start(self, device_index, channels, buffer_seconds):
+        if self.running:
+            self.stop()
+        self.channels = max(1, min(2, channels))
+        self.buffer_seconds = buffer_seconds
+        maxlen = int(RATE / CHUNK * buffer_seconds)
+        with self._lock:
+            self.ring = deque(maxlen=maxlen)
+        try:
+            self.stream = self.pa.open(format=FORMAT, channels=self.channels, rate=RATE,
+                                       input=True, input_device_index=device_index,
+                                       frames_per_buffer=CHUNK)
+        except Exception as e:
+            self.event_queue.put(("error", f"Could not open capture device: {e}"))
+            return False
+        self.running = True
+        self.capture_thread = threading.Thread(target=self._loop, daemon=True)
+        self.capture_thread.start()
+        self.event_queue.put(("status", "Monitoring VC audio. Capture hotkey armed."))
+        return True
+
+    def stop(self):
+        self.running = False
+        if self.capture_thread:
+            self.capture_thread.join(timeout=1.0)
+            self.capture_thread = None
+        if self.stream:
+            try:
+                self.stream.stop_stream()
+                self.stream.close()
+            except Exception:
+                pass
+            self.stream = None
+
+    def _loop(self):
+        while self.running and self.stream:
+            try:
+                data = self.stream.read(CHUNK, exception_on_overflow=False)
+            except Exception as e:
+                self.event_queue.put(("error", f"Capture error: {e}"))
+                break
+            with self._lock:
+                self.ring.append(data)
+
+    def save_last_clip(self, speaker):
+        if not self.running:
+            self.event_queue.put(("error", "Not monitoring - start it first."))
+            return
+        with self._lock:
+            frames = b"".join(self.ring)
+        if not frames:
+            self.event_queue.put(("error", "Buffer empty - wait a moment."))
+            return
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = f"clip_{ts}.wav"
+        with wave.open(os.path.join(CLIPS_DIR, fname), "wb") as wf:
+            wf.setnchannels(self.channels)
+            wf.setsampwidth(SAMPWIDTH)
+            wf.setframerate(RATE)
+            wf.writeframes(frames)
+        duration = len(frames) / (RATE * self.channels * SAMPWIDTH)
+        self.event_queue.put(("new_clip", {
+            "filename": fname, "speaker": speaker or "unknown", "transcript": "",
+            "duration": round(duration, 1), "timestamp": ts, "status": "pending",
+        }))
+
+    def terminate(self):
+        self.stop()
+
+
+# ----------------------------------------------------------------------------
+# Transcriber
+# ----------------------------------------------------------------------------
+class Transcriber:
+    def __init__(self, event_queue):
+        self.event_queue = event_queue
+        self.model = None
+
+    def _ensure(self):
+        if self.model is None:
+            self.event_queue.put(("status", f"Loading Whisper '{WHISPER_MODEL_SIZE}'..."))
+            from faster_whisper import WhisperModel
+            self.model = WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type="int8")
+            self.event_queue.put(("status", "Whisper loaded."))
+
+    def transcribe_file(self, fpath):
+        self._ensure()
+        segments, _ = self.model.transcribe(fpath, beam_size=1)
+        return " ".join(s.text.strip() for s in segments).strip()
+
+
+# ----------------------------------------------------------------------------
+# Soundboard / mic-mixer engine
+# ----------------------------------------------------------------------------
+class MixerEngine:
+    """Reads real mic -> mixes in triggered sounds -> applies gain -> writes to
+    a virtual cable output (and optionally a local monitor output)."""
+
+    def __init__(self, event_queue):
+        self.event_queue = event_queue
+        self.pa = pyaudio.PyAudio()
+        self.mic_stream = None
+        self.out_stream = None
+        self.monitor_stream = None
+        self.thread = None
+        self.running = False
+        self.mic_channels = 1
+        self.gain = 1.0
+        self._sounds_cache = {}          # path -> mono float32 (int16 scale)
+        self._active = []                # list of [data, pos]
+        self._lock = threading.Lock()
+
+    def set_gain_percent(self, pct):
+        self.gain = max(0.0, pct / 100.0)
+
+    def load_sound(self, path):
+        if path in self._sounds_cache:
+            return True
+        try:
+            import librosa
+            y, _ = librosa.load(path, sr=RATE, mono=True)   # [-1, 1]
+            self._sounds_cache[path] = (y * INT16_MAX).astype(np.float32)
+            return True
+        except Exception as e:
+            self.event_queue.put(("error", f"Could not load sound: {e}"))
+            return False
+
+    def trigger(self, path):
+        if self.load_sound(path):
+            with self._lock:
+                self._active.append([self._sounds_cache[path], 0])
+
+    def stop_all_sounds(self):
+        with self._lock:
+            self._active = []
+
+    def start(self, mic_index, cable_out_index, monitor_index=None):
+        if self.running:
+            self.stop()
+        # Open mic (try mono, fall back to stereo)
+        for ch in (1, 2):
+            try:
+                self.mic_stream = self.pa.open(format=FORMAT, channels=ch, rate=RATE,
+                                               input=True, input_device_index=mic_index,
+                                               frames_per_buffer=CHUNK)
+                self.mic_channels = ch
+                break
+            except Exception:
+                self.mic_stream = None
+        if self.mic_stream is None:
+            self.event_queue.put(("error", "Could not open mic."))
+            return False
+        try:
+            self.out_stream = self.pa.open(format=FORMAT, channels=2, rate=RATE,
+                                           output=True, output_device_index=cable_out_index,
+                                           frames_per_buffer=CHUNK)
+        except Exception as e:
+            self.event_queue.put(("error", f"Could not open cable output: {e}"))
+            self.stop()
+            return False
+        if monitor_index is not None:
+            try:
+                self.monitor_stream = self.pa.open(format=FORMAT, channels=2, rate=RATE,
+                                                   output=True, output_device_index=monitor_index,
+                                                   frames_per_buffer=CHUNK)
+            except Exception:
+                self.monitor_stream = None
+        self.running = True
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+        self.event_queue.put(("status", "Mixer running - Discord mic = CABLE Output."))
+        return True
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=1.0)
+            self.thread = None
+        for s in (self.mic_stream, self.out_stream, self.monitor_stream):
+            if s:
+                try:
+                    s.stop_stream(); s.close()
+                except Exception:
+                    pass
+        self.mic_stream = self.out_stream = self.monitor_stream = None
+
+    def _loop(self):
+        while self.running and self.mic_stream and self.out_stream:
+            try:
+                data = self.mic_stream.read(CHUNK, exception_on_overflow=False)
+            except Exception as e:
+                self.event_queue.put(("error", f"Mixer mic error: {e}"))
+                break
+            mix = bytes_to_mono_f32(data, self.mic_channels)
+            if len(mix) < CHUNK:
+                mix = np.pad(mix, (0, CHUNK - len(mix)))
+
+            # add active sounds
+            with self._lock:
+                still = []
+                for item in self._active:
+                    sdata, pos = item
+                    seg = sdata[pos:pos + CHUNK]
+                    mix[:len(seg)] += seg
+                    pos += len(seg)
+                    if pos < len(sdata):
+                        item[1] = pos
+                        still.append(item)
+                self._active = still
+
+            mix = mix * self.gain
+            out_bytes = mono_f32_to_stereo_int16_bytes(mix)
+            try:
+                self.out_stream.write(out_bytes)
+                if self.monitor_stream:
+                    self.monitor_stream.write(out_bytes)
+            except Exception as e:
+                self.event_queue.put(("error", f"Mixer output error: {e}"))
+                break
+
+    def terminate(self):
+        self.stop()
+
+
+# ----------------------------------------------------------------------------
+# Main app
+# ----------------------------------------------------------------------------
+class App:
+    def __init__(self, root):
+        self.root = root
+        root.title("Discord Voice Cloner + Soundboard")
+        root.geometry("960x640")
+
+        self.q = queue.Queue()
+        self.settings = load_settings()
+        self.index = load_index()
+        self.engine = AudioEngine(self.q)
+        self.transcriber = Transcriber(self.q)
+        self.mixer = MixerEngine(self.q)
+        self.hotkey_listener = None
+
+        nb = ttk.Notebook(root)
+        nb.pack(fill="both", expand=True)
+        self.tab_capture = ttk.Frame(nb); nb.add(self.tab_capture, text="Capture")
+        self.tab_board = ttk.Frame(nb);   nb.add(self.tab_board, text="Soundboard")
+        self.tab_train = ttk.Frame(nb);   nb.add(self.tab_train, text="Training")
+        self.tab_set = ttk.Frame(nb);     nb.add(self.tab_set, text="Settings")
+
+        self.status_var = tk.StringVar(value=f"Ready.  Capture hotkey: {CAPTURE_HOTKEY}")
+        ttk.Label(root, textvariable=self.status_var, relief="sunken", anchor="w",
+                  padding=4).pack(fill="x", side="bottom")
+
+        self._build_capture_tab()
+        self._build_board_tab()
+        self._build_train_tab()
+        self._build_settings_tab()
+
+        self._refresh_devices()
+        self._refresh_clip_list()
+        self._refresh_sound_list()
+        self._rebuild_hotkeys()
+
+        if self.settings.get("auto_update", True):
+            threading.Thread(target=self._startup_update, daemon=True).start()
+
+        self.root.after(100, self._poll)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ===================== Capture tab =====================
+    def _build_capture_tab(self):
+        t = self.tab_capture
+        top = ttk.Frame(t, padding=8); top.pack(fill="x")
+        ttk.Label(top, text="Audio device:").grid(row=0, column=0, sticky="w")
+        self.device_var = tk.StringVar()
+        self.device_combo = ttk.Combobox(top, textvariable=self.device_var, width=45, state="readonly")
+        self.device_combo.grid(row=0, column=1, padx=4, sticky="w")
+        ttk.Button(top, text="Refresh", command=self._refresh_devices).grid(row=0, column=2, padx=4)
+        ttk.Label(top, text="Buffer (sec):").grid(row=1, column=0, sticky="w", pady=4)
+        self.buffer_var = tk.IntVar(value=DEFAULT_BUFFER_SECONDS)
+        ttk.Spinbox(top, from_=3, to=60, textvariable=self.buffer_var, width=6).grid(row=1, column=1, sticky="w", padx=4)
+        ttk.Label(top, text="Speaker:").grid(row=2, column=0, sticky="w")
+        self.speaker_var = tk.StringVar(value="friend1")
+        ttk.Entry(top, textvariable=self.speaker_var, width=20).grid(row=2, column=1, sticky="w", padx=4)
+        self.autotrans_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(top, text="Auto-transcribe new clips", variable=self.autotrans_var).grid(row=2, column=2, sticky="w")
+        self.monitor_btn = ttk.Button(top, text="Start Monitoring", command=self._toggle_monitor)
+        self.monitor_btn.grid(row=0, column=3, rowspan=2, padx=10)
+
+        mid = ttk.Frame(t, padding=8); mid.pack(fill="both", expand=True)
+        cols = ("time", "speaker", "dur", "status", "transcript")
+        self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="extended")
+        for c, w in [("time", 130), ("speaker", 90), ("dur", 50), ("status", 80), ("transcript", 480)]:
+            self.tree.heading(c, text=c.capitalize()); self.tree.column(c, width=w, anchor="w")
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
+        sb.pack(side="right", fill="y"); self.tree.configure(yscrollcommand=sb.set)
+
+        bar = ttk.Frame(t, padding=8); bar.pack(fill="x")
+        ttk.Button(bar, text="Play", command=self._play_selected).pack(side="left", padx=3)
+        ttk.Button(bar, text="Edit Transcript", command=self._edit_transcript).pack(side="left", padx=3)
+        ttk.Button(bar, text="Transcribe Selected", command=self._transcribe_selected).pack(side="left", padx=3)
+        ttk.Button(bar, text="Transcribe All Pending", command=self._transcribe_pending).pack(side="left", padx=3)
+        ttk.Button(bar, text="Delete", command=self._delete_selected).pack(side="left", padx=3)
+
+    # ===================== Soundboard tab =====================
+    def _build_board_tab(self):
+        t = self.tab_board
+        top = ttk.Frame(t, padding=8); top.pack(fill="x")
+        ttk.Label(top, text="Your mic:").grid(row=0, column=0, sticky="w")
+        self.mic_var = tk.StringVar()
+        self.mic_combo = ttk.Combobox(top, textvariable=self.mic_var, width=42, state="readonly")
+        self.mic_combo.grid(row=0, column=1, padx=4, sticky="w")
+        ttk.Label(top, text="Virtual cable out:").grid(row=1, column=0, sticky="w", pady=3)
+        self.cable_var = tk.StringVar()
+        self.cable_combo = ttk.Combobox(top, textvariable=self.cable_var, width=42, state="readonly")
+        self.cable_combo.grid(row=1, column=1, padx=4, sticky="w")
+        self.monitor_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(top, text="Also hear it myself (monitor to speakers)",
+                        variable=self.monitor_var).grid(row=2, column=1, sticky="w")
+        self.mixer_btn = ttk.Button(top, text="Start Mixer", command=self._toggle_mixer)
+        self.mixer_btn.grid(row=0, column=2, rowspan=2, padx=10)
+
+        gain = ttk.Frame(t, padding=8); gain.pack(fill="x")
+        ttk.Label(gain, text="Output volume / gain:").pack(side="left")
+        self.gain_var = tk.IntVar(value=self.settings.get("gain", 100))
+        self.gain_scale = ttk.Scale(gain, from_=0, to=300, orient="horizontal",
+                                    variable=self.gain_var, command=self._on_gain)
+        self.gain_scale.pack(side="left", fill="x", expand=True, padx=8)
+        self.gain_lbl = ttk.Label(gain, text=f"{self.gain_var.get()}%")
+        self.gain_lbl.pack(side="left")
+        ttk.Label(gain, text="(>100% = peaked/clipped)").pack(side="left", padx=6)
+
+        mid = ttk.Frame(t, padding=8); mid.pack(fill="both", expand=True)
+        self.sound_list = tk.Listbox(mid, selectmode="browse")
+        self.sound_list.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(mid, orient="vertical", command=self.sound_list.yview)
+        sb.pack(side="right", fill="y"); self.sound_list.configure(yscrollcommand=sb.set)
+
+        bar = ttk.Frame(t, padding=8); bar.pack(fill="x")
+        ttk.Button(bar, text="Add Sound", command=self._add_sound).pack(side="left", padx=3)
+        ttk.Button(bar, text="Remove", command=self._remove_sound).pack(side="left", padx=3)
+        ttk.Button(bar, text="Play (into Discord)", command=self._play_sound).pack(side="left", padx=3)
+        ttk.Button(bar, text="Stop All Sounds", command=self.mixer.stop_all_sounds).pack(side="left", padx=3)
+        ttk.Label(bar, text="Hotkeys: Ctrl+Alt+1..9 = first 9 sounds").pack(side="right")
+
+    # ===================== Training tab =====================
+    def _build_train_tab(self):
+        t = self.tab_train
+        f = ttk.Frame(t, padding=12); f.pack(fill="both", expand=True)
+        msg = (
+            "Dataset export\n"
+            "--------------\n"
+            "Exports transcribed clips for ONE speaker into a Piper-ready dataset:\n"
+            "   dataset/<speaker>/wav/*.wav   (22050 Hz mono)\n"
+            "   dataset/<speaker>/metadata.csv   (id|transcript)\n\n"
+            "GPU training runs on Google Colab (free) - CPU training is impractical.\n"
+            "Export a dataset, then we'll wire in the Colab notebook.\n"
+        )
+        ttk.Label(f, text=msg, justify="left", font=("Consolas", 10)).pack(anchor="w")
+        ttk.Button(f, text="Export Piper Dataset", command=self._export_dataset).pack(anchor="w", pady=8)
+        self.train_status = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.train_status, justify="left").pack(anchor="w")
+
+    # ===================== Settings tab =====================
+    def _build_settings_tab(self):
+        t = self.tab_set
+        f = ttk.Frame(t, padding=12); f.pack(fill="both", expand=True)
+        self.auto_update_var = tk.BooleanVar(value=self.settings.get("auto_update", True))
+        ttk.Checkbutton(f, text="Check my git repo for updates on startup",
+                        variable=self.auto_update_var, command=self._save_prefs).pack(anchor="w")
+        self.git_status = tk.StringVar(value=self._git_status_text())
+        ttk.Label(f, textvariable=self.git_status, justify="left").pack(anchor="w", pady=6)
+        row = ttk.Frame(f); row.pack(anchor="w")
+        ttk.Button(row, text="Check for Updates Now", command=self._manual_update).pack(side="left", padx=3)
+        ttk.Button(row, text="Restart App", command=self._restart).pack(side="left", padx=3)
+        ttk.Label(f, text=(
+            "\nAuto-update setup (one time):\n"
+            "  1. Make a GitHub repo and push this project to it.\n"
+            "  2. Clone it to your PC and run from that folder.\n"
+            "  3. Updates you push will be pulled on the next launch.\n"
+        ), justify="left").pack(anchor="w")
+
+    def _git_status_text(self):
+        if git_available():
+            return f"Git repo detected. Current version: {git_current_commit()}"
+        return "No git repo detected (auto-update disabled until you clone from your repo)."
+
+    # ===================== Devices =====================
+    def _refresh_devices(self):
+        self.in_devices = self.engine.list_input_devices()
+        self.out_devices = self.engine.list_output_devices()
+        in_labels = [f"[{i}] {n} ({c}ch)" for (i, n, c) in self.in_devices]
+        out_labels = [f"[{i}] {n} ({c}ch)" for (i, n, c) in self.out_devices]
+
+        self.device_combo["values"] = in_labels
+        self._auto_select(self.device_combo, in_labels,
+                          ["stereo mix", "what u hear", "cable output", "loopback"])
+        self.mic_combo["values"] = in_labels
+        self._auto_select(self.mic_combo, in_labels,
+                          ["realtek hd audio mic", "microphone (realtek"])
+        self.cable_combo["values"] = out_labels
+        self._auto_select(self.cable_combo, out_labels, ["cable input"])
+
+    def _auto_select(self, combo, labels, keywords):
+        for idx, lbl in enumerate(labels):
+            low = lbl.lower()
+            if any(k in low for k in keywords):
+                combo.current(idx); return
+        if labels and combo.current() < 0:
+            combo.current(0)
+
+    def _sel_in(self, combo):
+        i = combo.current()
+        return self.in_devices[i] if i >= 0 else None
+
+    def _sel_out(self, combo):
+        i = combo.current()
+        return self.out_devices[i] if i >= 0 else None
+
+    # ===================== Monitoring (capture) =====================
+    def _toggle_monitor(self):
+        if self.engine.running:
+            self.engine.stop()
+            self.monitor_btn.config(text="Start Monitoring")
+            self.status_var.set("Monitoring stopped.")
+        else:
+            dev = self._sel_in(self.device_combo)
+            if not dev:
+                messagebox.showerror("No device", "Pick an audio device."); return
+            if self.engine.start(dev[0], dev[2], self.buffer_var.get()):
+                self.monitor_btn.config(text="Stop Monitoring")
+
+    # ===================== Mixer =====================
+    def _toggle_mixer(self):
+        if self.mixer.running:
+            self.mixer.stop()
+            self.mixer_btn.config(text="Start Mixer")
+            self.status_var.set("Mixer stopped (your mic no longer routed).")
+        else:
+            mic = self._sel_in(self.mic_combo)
+            cable = self._sel_out(self.cable_combo)
+            if not mic or not cable:
+                messagebox.showerror("Devices", "Pick both your mic and the virtual cable output.")
+                return
+            mon = None
+            if self.monitor_var.get():
+                try:
+                    mon = self.mixer.pa.get_default_output_device_info()["index"]
+                except Exception:
+                    mon = None
+            self.mixer.set_gain_percent(self.gain_var.get())
+            if self.mixer.start(mic[0], cable[0], mon):
+                self.mixer_btn.config(text="Stop Mixer")
+
+    def _on_gain(self, _=None):
+        pct = int(float(self.gain_var.get()))
+        self.gain_lbl.config(text=f"{pct}%")
+        self.mixer.set_gain_percent(pct)
+        self.settings["gain"] = pct; save_settings(self.settings)
+
+    # ===================== Sounds =====================
+    def _refresh_sound_list(self):
+        self.sound_list.delete(0, "end")
+        for p in self.settings.get("sounds", []):
+            self.sound_list.insert("end", os.path.basename(p))
+
+    def _add_sound(self):
+        path = filedialog.askopenfilename(
+            title="Add sound", filetypes=[("Audio", "*.wav *.mp3 *.ogg *.flac"), ("All", "*.*")])
+        if path:
+            self.settings.setdefault("sounds", []).append(path)
+            save_settings(self.settings)
+            self._refresh_sound_list()
+            self._rebuild_hotkeys()
+
+    def _remove_sound(self):
+        sel = self.sound_list.curselection()
+        if not sel:
+            return
+        del self.settings["sounds"][sel[0]]
+        save_settings(self.settings)
+        self._refresh_sound_list()
+        self._rebuild_hotkeys()
+
+    def _play_sound(self, idx=None):
+        sounds = self.settings.get("sounds", [])
+        if idx is None:
+            sel = self.sound_list.curselection()
+            if not sel:
+                return
+            idx = sel[0]
+        if idx < len(sounds):
+            if not self.mixer.running:
+                self.status_var.set("Start the mixer first so Discord can hear the sound.")
+            self.mixer.trigger(sounds[idx])
+
+    # ===================== Hotkeys =====================
+    def _rebuild_hotkeys(self):
+        from pynput import keyboard
+        if self.hotkey_listener:
+            try:
+                self.hotkey_listener.stop()
+            except Exception:
+                pass
+        mapping = {CAPTURE_HOTKEY: lambda: self.engine.save_last_clip(self.speaker_var.get())}
+        for n in range(1, 10):
+            mapping[f"<ctrl>+<alt>+{n}"] = (lambda i=n - 1: self._play_sound(i))
+        self.hotkey_listener = keyboard.GlobalHotKeys(mapping)
+        self.hotkey_listener.start()
+
+    # ===================== Clip list ops =====================
+    def _refresh_clip_list(self):
+        self.tree.delete(*self.tree.get_children())
+        for c in self.index:
+            preview = (c.get("transcript", "") or "")[:80]
+            self.tree.insert("", "end", iid=c["filename"], values=(
+                c.get("timestamp", ""), c.get("speaker", ""), c.get("duration", ""),
+                c.get("status", ""), preview))
+
+    def _sel_files(self):
+        return list(self.tree.selection())
+
+    def _clip(self, fname):
+        for c in self.index:
+            if c["filename"] == fname:
+                return c
+        return None
+
+    def _play_selected(self):
+        sel = self._sel_files()
+        if not sel:
+            return
+        fpath = os.path.join(CLIPS_DIR, sel[0])
+        if HAVE_WINSOUND:
+            winsound.PlaySound(fpath, winsound.SND_FILENAME | winsound.SND_ASYNC)
+
+    def _transcribe_one(self, fname):
+        def worker():
+            try:
+                text = self.transcriber.transcribe_file(os.path.join(CLIPS_DIR, fname))
+                self.q.put(("transcript", (fname, text)))
+            except Exception as e:
+                self.q.put(("error", f"Transcribe failed: {e}"))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _transcribe_selected(self):
+        for f in self._sel_files():
+            self._transcribe_one(f)
+
+    def _transcribe_pending(self):
+        for c in self.index:
+            if not c.get("transcript"):
+                self._transcribe_one(c["filename"])
+
+    def _edit_transcript(self):
+        sel = self._sel_files()
+        if not sel:
+            return
+        clip = self._clip(sel[0])
+        if not clip:
+            return
+        win = tk.Toplevel(self.root); win.title(f"Edit - {sel[0]}"); win.geometry("500x220")
+        txt = tk.Text(win, wrap="word"); txt.pack(fill="both", expand=True, padx=8, pady=8)
+        txt.insert("1.0", clip.get("transcript", ""))
+        def save():
+            clip["transcript"] = txt.get("1.0", "end").strip(); clip["status"] = "done"
+            save_index(self.index); self._refresh_clip_list(); win.destroy()
+        ttk.Button(win, text="Save", command=save).pack(pady=6)
+
+    def _delete_selected(self):
+        sel = self._sel_files()
+        if not sel or not messagebox.askyesno("Delete", f"Delete {len(sel)} clip(s)?"):
+            return
+        for fname in sel:
+            fpath = os.path.join(CLIPS_DIR, fname)
+            if os.path.exists(fpath):
+                try:
+                    os.remove(fpath)
+                except Exception:
+                    pass
+            self.index = [c for c in self.index if c["filename"] != fname]
+        save_index(self.index); self._refresh_clip_list()
+
+    # ===================== Dataset export =====================
+    def _export_dataset(self):
+        speakers = sorted({c.get("speaker", "unknown") for c in self.index if c.get("transcript")})
+        if not speakers:
+            messagebox.showinfo("Export", "No transcribed clips yet."); return
+        speaker = simpledialog.askstring("Export", f"Speaker to export?\nAvailable: {', '.join(speakers)}",
+                                         initialvalue=speakers[0])
+        if not speaker:
+            return
+        clips = [c for c in self.index if c.get("speaker") == speaker and c.get("transcript")]
+        if not clips:
+            messagebox.showinfo("Export", f"No transcribed clips for '{speaker}'."); return
+
+        def worker():
+            try:
+                import librosa, soundfile as sf
+                out_dir = os.path.join("dataset", speaker)
+                wav_dir = os.path.join(out_dir, "wav")
+                os.makedirs(wav_dir, exist_ok=True)
+                lines = []
+                for i, c in enumerate(clips):
+                    self.q.put(("train_status", f"Exporting {i+1}/{len(clips)}..."))
+                    y, _ = librosa.load(os.path.join(CLIPS_DIR, c["filename"]), sr=22050, mono=True)
+                    cid = f"{speaker}_{i:04d}"
+                    sf.write(os.path.join(wav_dir, cid + ".wav"), y, 22050)
+                    text = c["transcript"].replace("|", " ").replace("\n", " ").strip()
+                    lines.append(f"{cid}|{text}")
+                with open(os.path.join(out_dir, "metadata.csv"), "w", encoding="utf-8") as f:
+                    f.write("\n".join(lines) + "\n")
+                total = sum(c.get("duration", 0) for c in clips)
+                self.q.put(("train_status", f"Exported {len(clips)} clips (~{total/60:.1f} min) to {out_dir}"))
+            except Exception as e:
+                self.q.put(("error", f"Export failed: {e}"))
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ===================== Updates =====================
+    def _startup_update(self):
+        changed, msg = git_pull()
+        if changed:
+            self.q.put(("status", "Update pulled - restart to apply."))
+
+    def _manual_update(self):
+        changed, msg = git_pull()
+        self.git_status.set(self._git_status_text())
+        messagebox.showinfo("Update", msg + ("\n\nRestart to apply." if changed else ""))
+
+    def _restart(self):
+        self._on_close(restart=True)
+
+    def _save_prefs(self):
+        self.settings["auto_update"] = self.auto_update_var.get()
+        save_settings(self.settings)
+
+    # ===================== Event pump =====================
+    def _poll(self):
+        try:
+            while True:
+                kind, payload = self.q.get_nowait()
+                if kind == "status":
+                    self.status_var.set(payload)
+                elif kind == "error":
+                    self.status_var.set("ERROR: " + payload)
+                elif kind == "train_status":
+                    self.train_status.set(payload)
+                elif kind == "new_clip":
+                    self.index.append(payload); save_index(self.index)
+                    self._refresh_clip_list()
+                    self.status_var.set(f"Saved {payload['filename']} ({payload['duration']}s)")
+                    if self.autotrans_var.get():
+                        self._transcribe_one(payload["filename"])
+                elif kind == "transcript":
+                    fname, text = payload
+                    for c in self.index:
+                        if c["filename"] == fname:
+                            c["transcript"] = text; c["status"] = "done"
+                    save_index(self.index); self._refresh_clip_list()
+        except queue.Empty:
+            pass
+        self.root.after(100, self._poll)
+
+    # ===================== Close =====================
+    def _on_close(self, restart=False):
+        try:
+            if self.hotkey_listener:
+                self.hotkey_listener.stop()
+            self.engine.terminate()
+            self.mixer.terminate()
+        finally:
+            if restart:
+                self.root.destroy()
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            else:
+                self.root.destroy()
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = App(root)
+    root.mainloop()

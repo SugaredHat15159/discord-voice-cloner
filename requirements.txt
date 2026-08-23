@@ -1,0 +1,9 @@
+# Runtime dependencies (CPU). GPU training happens separately on Colab.
+faster-whisper
+pyaudio
+librosa
+soundfile
+numpy
+scipy
+pynput
+piper-tts
