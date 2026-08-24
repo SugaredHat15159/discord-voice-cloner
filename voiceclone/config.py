@@ -4,7 +4,7 @@ import pyaudio
 
 # Audio
 RATE = 48000
-CHUNK = 1024
+CHUNK = 2048
 FORMAT = pyaudio.paInt16
 SAMPWIDTH = 2
 INT16_MAX = 32767
