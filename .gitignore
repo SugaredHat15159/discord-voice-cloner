@@ -7,3 +7,4 @@ tts_out/
 piper_models/
 *.wav
 .venv/
+sounds/
