@@ -18,10 +18,11 @@ CAPTURE_HOTKEY = "<ctrl>+<shift>+c"
 CLIPS_DIR = "clips"
 DATASET_DIR = "dataset"
 TTS_OUT_DIR = "tts_out"
+SOUNDS_DIR = "sounds"
 INDEX_PATH = os.path.join(CLIPS_DIR, "index.json")
 SETTINGS_PATH = "settings.json"
 
 
 def ensure_dirs():
-    for d in (CLIPS_DIR, DATASET_DIR, TTS_OUT_DIR):
+    for d in (CLIPS_DIR, DATASET_DIR, TTS_OUT_DIR, SOUNDS_DIR):
         os.makedirs(d, exist_ok=True)

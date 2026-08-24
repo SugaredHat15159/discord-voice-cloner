@@ -6,7 +6,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
-from .config import (CAPTURE_HOTKEY, DEFAULT_BUFFER_SECONDS, CLIPS_DIR, ensure_dirs)
+from .config import (CAPTURE_HOTKEY, DEFAULT_BUFFER_SECONDS, CLIPS_DIR, SOUNDS_DIR, ensure_dirs)
 from .theme import apply_theme
 from . import audio_utils, storage, updater, dataset, tts, recorder
 from .capture import AudioEngine
@@ -63,7 +63,7 @@ class App:
 
         self._refresh_devices()
         self._refresh_clip_list()
-        self._refresh_sound_list()
+        self._scan_sound_folder()
         self._update_hotkey_listener()
 
         self.root.after(120, self._poll)
@@ -166,6 +166,8 @@ class App:
 
         bar = ttk.Frame(t, padding=12); bar.pack(fill="x")
         ttk.Button(bar, text="Add Sound", command=self._add_sound).pack(side="left", padx=3)
+        ttk.Button(bar, text="Open Folder", command=self._open_sound_folder).pack(side="left", padx=3)
+        ttk.Button(bar, text="Rescan", command=self._scan_sound_folder).pack(side="left", padx=3)
         ttk.Button(bar, text="Remove", style="Danger.TButton", command=self._remove_sound).pack(side="left", padx=3)
         ttk.Button(bar, text="Play into Discord", style="Accent.TButton", command=self._play_sound).pack(side="left", padx=3)
         ttk.Button(bar, text="Stop Sounds", command=self.mixer.stop_all_sounds).pack(side="left", padx=3)
@@ -341,6 +343,41 @@ class App:
             self.settings.setdefault("sounds", []).append(path)
             storage.save_settings(self.settings)
             self._refresh_sound_list(); self._update_hotkey_listener()
+
+    def _open_sound_folder(self):
+        folder = os.path.abspath(SOUNDS_DIR)
+        os.makedirs(folder, exist_ok=True)
+        try:
+            os.startfile(folder)          # Windows: open in Explorer
+        except Exception:
+            self.status_var.set(f"Drop sounds into: {folder}")
+
+    def _scan_sound_folder(self):
+        exts = (".wav", ".mp3", ".ogg", ".flac")
+        folder = os.path.abspath(SOUNDS_DIR)
+        os.makedirs(folder, exist_ok=True)
+        sounds = self.settings.setdefault("sounds", [])
+        existing = {os.path.abspath(p) for p in sounds}
+        try:
+            for name in sorted(os.listdir(folder)):
+                if name.lower().endswith(exts):
+                    ap = os.path.join(folder, name)
+                    if ap not in existing:
+                        sounds.append(ap); existing.add(ap)
+        except Exception:
+            pass
+        # prune files that were deleted out of the folder
+        kept = []
+        for p in sounds:
+            ap = os.path.abspath(p)
+            if ap.startswith(folder + os.sep) and not os.path.exists(ap):
+                self.settings.get("sound_binds", {}).pop(p, None)
+                continue
+            kept.append(p)
+        self.settings["sounds"] = kept
+        storage.save_settings(self.settings)
+        self._refresh_sound_list()
+        self._update_hotkey_listener()
 
     def _remove_sound(self):
         sel = self.sound_list.curselection()
