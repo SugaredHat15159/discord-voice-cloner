@@ -11,7 +11,7 @@ INT16_MAX = 32767
 
 # Behaviour
 DEFAULT_BUFFER_SECONDS = 15
-WHISPER_MODEL_SIZE = "base"          # tiny / base / small
+WHISPER_MODEL_SIZE = "small"          # tiny / base / small
 CAPTURE_HOTKEY = "<ctrl>+<shift>+c"
 
 # Paths
