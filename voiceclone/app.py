@@ -107,7 +107,7 @@ class App:
                           ("dur", 55, "Dur"), ("status", 80, "Status"),
                           ("transcript", 470, "Transcript")]:
             self.tree.heading(c, text=lbl); self.tree.column(c, width=w, anchor="w")
-        self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.bind("<Double-1>", self._edit_transcript)
         sb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
         sb.pack(side="right", fill="y"); self.tree.configure(yscrollcommand=sb.set)
 
@@ -615,23 +615,40 @@ class App:
             if not c.get("transcript"):
                 self._transcribe_one(c["filename"])
 
-    def _edit_transcript(self):
+    def _edit_transcript(self, _event=None):
         sel = self._sel_files()
         if not sel:
             return
         clip = self._clip(sel[0])
         if not clip:
             return
-        win = tk.Toplevel(self.root); win.title(f"Edit - {sel[0]}"); win.geometry("520x240")
+        win = tk.Toplevel(self.root); win.title(f"Edit - {sel[0]}"); win.geometry("560x300")
         win.configure(bg=self.p["bg"])
+        win.transient(self.root); win.grab_set(); win.lift()
+
+        # Buttons FIRST, pinned to the bottom, so they can never be pushed off-screen.
+        btns = ttk.Frame(win, padding=(10, 8)); btns.pack(side="bottom", fill="x")
+
         txt = tk.Text(win, wrap="word", relief="flat", bg=self.p["field"],
-                      highlightthickness=1, highlightbackground="#d7d9de", font=("Segoe UI", 10))
-        txt.pack(fill="both", expand=True, padx=10, pady=10)
+                      highlightthickness=1, highlightbackground="#d7d9de", font=("Segoe UI", 11))
+        txt.pack(side="top", fill="both", expand=True, padx=10, pady=(10, 0))
         txt.insert("1.0", clip.get("transcript", ""))
-        def save():
-            clip["transcript"] = txt.get("1.0", "end").strip(); clip["status"] = "done"
-            storage.save_index(self.index); self._refresh_clip_list(); win.destroy()
-        ttk.Button(win, text="Save", style="Accent.TButton", command=save).pack(pady=8)
+        txt.focus_set()
+
+        def save(_e=None):
+            clip["transcript"] = txt.get("1.0", "end").strip()
+            clip["status"] = "done"
+            storage.save_index(self.index)
+            self._refresh_clip_list()
+            win.destroy()
+
+        ttk.Button(btns, text="Save", style="Accent.TButton", command=save).pack(side="right")
+        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="right", padx=6)
+        ttk.Label(btns, text="Ctrl+S to save  \u2022  Esc to cancel",
+                  style="Muted.TLabel").pack(side="left")
+
+        win.bind("<Control-s>", save)
+        win.bind("<Escape>", lambda _e: win.destroy())
 
     def _delete_selected(self):
         sel = self._sel_files()
