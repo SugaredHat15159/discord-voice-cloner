@@ -10,7 +10,12 @@ _DEFAULT_SETTINGS = {
     "enable_capture_hotkey": True,
     "enable_sound_hotkeys": True,
     "sounds": [],
-    "gain": 100,
+    "mic_gain": 100,
+    "sound_gain": 100,
+    "keybinds": {"capture": "<ctrl>+<shift>+c", "stop_sounds": ""},
+    "sound_binds": {},
+    "pitch_semitones": 0,
+    "pitch_presets": {"Normal": 0, "Chipmunk": 7, "Deep": -7},
     "tts_model": "",
 }
 

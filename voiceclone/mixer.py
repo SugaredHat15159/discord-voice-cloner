@@ -42,13 +42,17 @@ class MixerEngine:
         self.in_rate = None
         self.out_rate = None
         self.mon_rate = None
-        self.gain = 1.0
+        self.mic_gain = 1.0
+        self.sound_gain = 1.0
         self._cache = {}       # (path, rate) -> mono float32 (int16 scale)
         self._active = []      # [ [data, pos], ... ]
         self._lock = threading.Lock()
 
-    def set_gain_percent(self, pct):
-        self.gain = max(0.0, pct / 100.0)
+    def set_mic_gain_percent(self, pct):
+        self.mic_gain = max(0.0, pct / 100.0)
+
+    def set_sound_gain_percent(self, pct):
+        self.sound_gain = max(0.0, pct / 100.0)
 
     def _get_sound(self, path, rate):
         key = (path, rate)
@@ -137,18 +141,18 @@ class MixerEngine:
             n = len(mix)
             if n == 0:
                 continue
+            mix = mix * self.mic_gain
             with self._lock:
                 still = []
                 for item in self._active:
                     sdata, pos = item
                     seg = sdata[pos:pos + n]
-                    mix[:len(seg)] += seg
+                    mix[:len(seg)] += seg * self.sound_gain
                     pos += len(seg)
                     if pos < len(sdata):
                         item[1] = pos
                         still.append(item)
                 self._active = still
-            mix = mix * self.gain
             out_bytes = mono_f32_to_stereo_int16_bytes(mix)
             try:
                 self.out_stream.write(out_bytes)

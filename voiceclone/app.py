@@ -138,14 +138,23 @@ class App:
                                     command=self._toggle_mixer)
         self.mixer_btn.grid(row=0, column=2, rowspan=2, padx=12)
 
-        gain = ttk.Frame(t, padding=(12, 0)); gain.pack(fill="x")
-        ttk.Label(gain, text="Output volume / gain").pack(side="left")
-        self.gain_var = tk.IntVar(value=self.settings.get("gain", 100))
-        ttk.Scale(gain, from_=0, to=300, orient="horizontal", variable=self.gain_var,
-                  command=self._on_gain).pack(side="left", fill="x", expand=True, padx=10)
-        self.gain_lbl = ttk.Label(gain, text=f"{self.gain_var.get()}%")
-        self.gain_lbl.pack(side="left")
-        ttk.Label(gain, text="(>100% = peaked)", style="Muted.TLabel").pack(side="left", padx=8)
+        g1 = ttk.Frame(t, padding=(12, 2)); g1.pack(fill="x")
+        ttk.Label(g1, text="My mic volume", width=16).pack(side="left")
+        self.mic_gain_var = tk.IntVar(value=self.settings.get("mic_gain", 100))
+        ttk.Scale(g1, from_=0, to=300, orient="horizontal", variable=self.mic_gain_var,
+                  command=self._on_mic_gain).pack(side="left", fill="x", expand=True, padx=10)
+        self.mic_gain_lbl = ttk.Label(g1, text=f"{self.mic_gain_var.get()}%", width=6)
+        self.mic_gain_lbl.pack(side="left")
+
+        g2 = ttk.Frame(t, padding=(12, 2)); g2.pack(fill="x")
+        ttk.Label(g2, text="Soundboard volume", width=16).pack(side="left")
+        self.sound_gain_var = tk.IntVar(value=self.settings.get("sound_gain", 100))
+        ttk.Scale(g2, from_=0, to=300, orient="horizontal", variable=self.sound_gain_var,
+                  command=self._on_sound_gain).pack(side="left", fill="x", expand=True, padx=10)
+        self.sound_gain_lbl = ttk.Label(g2, text=f"{self.sound_gain_var.get()}%", width=6)
+        self.sound_gain_lbl.pack(side="left")
+        ttk.Label(t, style="Muted.TLabel", padding=(12, 0),
+                  text="(>100% = peaked. Mic and sounds mix together, so you can talk over sounds.)").pack(anchor="w")
 
         mid = ttk.Frame(t, padding=12); mid.pack(fill="both", expand=True)
         self.sound_list = tk.Listbox(mid, selectmode="browse", relief="flat",
@@ -159,8 +168,9 @@ class App:
         ttk.Button(bar, text="Add Sound", command=self._add_sound).pack(side="left", padx=3)
         ttk.Button(bar, text="Remove", style="Danger.TButton", command=self._remove_sound).pack(side="left", padx=3)
         ttk.Button(bar, text="Play into Discord", style="Accent.TButton", command=self._play_sound).pack(side="left", padx=3)
-        ttk.Button(bar, text="Stop All", command=self.mixer.stop_all_sounds).pack(side="left", padx=3)
-        ttk.Label(bar, text="Ctrl+Alt+1..9 = first 9 sounds", style="Muted.TLabel").pack(side="right")
+        ttk.Button(bar, text="Stop Sounds", command=self.mixer.stop_all_sounds).pack(side="left", padx=3)
+        ttk.Button(bar, text="Set Hotkey", command=self._set_sound_hotkey).pack(side="left", padx=3)
+        ttk.Button(bar, text="Clear Hotkey", command=self._clear_sound_hotkey).pack(side="left", padx=3)
 
     # ---------- training tab ----------
     def _build_train_tab(self):
@@ -212,6 +222,19 @@ class App:
                         variable=self.enable_capture_hotkey, command=self._on_toggle_hotkeys).pack(anchor="w")
         ttk.Checkbutton(tg, text="Soundboard hotkeys (Ctrl+Alt+1..9) while mixer runs",
                         variable=self.enable_sound_hotkeys, command=self._on_toggle_hotkeys).pack(anchor="w")
+
+        kbf = ttk.Labelframe(f, text="Keybinds", padding=10); kbf.pack(fill="x", pady=(0, 12))
+        self.kb_vars = {}
+        for action, label in [("capture", "Grab clip"), ("stop_sounds", "Stop sounds")]:
+            row = ttk.Frame(kbf); row.pack(fill="x", pady=2)
+            ttk.Label(row, text=label, width=14).pack(side="left")
+            var = tk.StringVar(); self.kb_vars[action] = var
+            ttk.Label(row, textvariable=var, width=22).pack(side="left")
+            ttk.Button(row, text="Set", command=lambda a=action: self._set_action_hotkey(a)).pack(side="left", padx=3)
+            ttk.Button(row, text="Clear", command=lambda a=action: self._clear_action_hotkey(a)).pack(side="left")
+        ttk.Label(kbf, style="Muted.TLabel",
+                  text="Per-sound hotkeys: on the Soundboard tab, pick a sound then Set Hotkey.").pack(anchor="w", pady=(6, 0))
+        self._refresh_keybind_labels()
 
         up = ttk.Labelframe(f, text="Updates", padding=10); up.pack(fill="x")
         self.auto_update_var = tk.BooleanVar(value=self.settings.get("auto_update", True))
@@ -284,22 +307,32 @@ class App:
         if not mic or not cable:
             messagebox.showerror("Devices", "Pick both your mic and the virtual cable output."); return
         mon = audio_utils.default_output_index() if self.monitor_var.get() else None
-        self.mixer.set_gain_percent(self.gain_var.get())
+        self.mixer.set_mic_gain_percent(self.mic_gain_var.get())
+        self.mixer.set_sound_gain_percent(self.sound_gain_var.get())
         if self.mixer.start(mic[0], cable[0], mon):
             self.mixer_btn.config(text="Stop Mixer")
         self._update_hotkey_listener()
 
-    def _on_gain(self, _=None):
-        pct = int(float(self.gain_var.get()))
-        self.gain_lbl.config(text=f"{pct}%")
-        self.mixer.set_gain_percent(pct)
-        self.settings["gain"] = pct; storage.save_settings(self.settings)
+    def _on_mic_gain(self, _=None):
+        pct = int(float(self.mic_gain_var.get()))
+        self.mic_gain_lbl.config(text=f"{pct}%")
+        self.mixer.set_mic_gain_percent(pct)
+        self.settings["mic_gain"] = pct; storage.save_settings(self.settings)
+
+    def _on_sound_gain(self, _=None):
+        pct = int(float(self.sound_gain_var.get()))
+        self.sound_gain_lbl.config(text=f"{pct}%")
+        self.mixer.set_sound_gain_percent(pct)
+        self.settings["sound_gain"] = pct; storage.save_settings(self.settings)
 
     # ---------- sounds ----------
     def _refresh_sound_list(self):
         self.sound_list.delete(0, "end")
+        binds = self.settings.get("sound_binds", {})
         for pth in self.settings.get("sounds", []):
-            self.sound_list.insert("end", os.path.basename(pth))
+            name = os.path.basename(pth)
+            hk = binds.get(pth)
+            self.sound_list.insert("end", f"{name}    [{hk}]" if hk else name)
 
     def _add_sound(self):
         path = filedialog.askopenfilename(title="Add sound",
@@ -324,10 +357,15 @@ class App:
             if not sel:
                 return
             idx = sel[0]
-        if idx < len(sounds):
-            if not self.mixer.running:
-                self.status_var.set("Start the mixer first so Discord can hear the sound.")
-            self.mixer.trigger(sounds[idx])
+        if idx >= len(sounds):
+            return
+        self._play_path(sounds[idx])
+
+    def _play_path(self, path):
+        if not self.mixer.running:
+            self.status_var.set("Start the mixer first - sounds only play once the mixer is running.")
+            return
+        self.mixer.trigger(path)
 
     # ---------- hotkeys ----------
     def _update_hotkey_listener(self):
@@ -339,14 +377,151 @@ class App:
                 pass
             self.hotkey_listener = None
         mapping = {}
+
+        def add(hk, fn):
+            if not hk:
+                return
+            try:
+                keyboard.HotKey.parse(hk)   # validate
+            except Exception:
+                self.q.put(("error", f"Ignoring invalid hotkey: {hk}"))
+                return
+            mapping[hk] = fn
+
+        kb = self.settings.get("keybinds", {})
         if self.engine.running and self.enable_capture_hotkey.get():
-            mapping[CAPTURE_HOTKEY] = lambda: self.engine.save_last_clip(self.speaker_var.get())
-        if self.mixer.running and self.enable_sound_hotkeys.get():
-            for n in range(1, 10):
-                mapping[f"<ctrl>+<alt>+{n}"] = (lambda i=n - 1: self._play_sound(i))
+            add(kb.get("capture", CAPTURE_HOTKEY),
+                lambda: self.engine.save_last_clip(self.speaker_var.get()))
+        if self.mixer.running:
+            add(kb.get("stop_sounds", ""), self.mixer.stop_all_sounds)
+            for path, hk in self.settings.get("sound_binds", {}).items():
+                add(hk, (lambda p=path: self._play_path(p)))
+            if self.enable_sound_hotkeys.get():
+                sounds = self.settings.get("sounds", [])
+                bound = set(self.settings.get("sound_binds", {}).values())
+                for n in range(1, 10):
+                    hk = f"<ctrl>+<alt>+{n}"
+                    if n - 1 < len(sounds) and hk not in bound:
+                        add(hk, (lambda i=n - 1: self._play_sound(i)))
         if mapping:
-            self.hotkey_listener = keyboard.GlobalHotKeys(mapping)
-            self.hotkey_listener.start()
+            try:
+                self.hotkey_listener = keyboard.GlobalHotKeys(mapping)
+                self.hotkey_listener.start()
+            except Exception as e:
+                self.q.put(("error", f"Hotkey setup failed: {e}"))
+                self.hotkey_listener = None
+
+    # ---------- hotkey capture / binding ----------
+    def _capture_hotkey(self, on_done):
+        from pynput import keyboard
+        if self.hotkey_listener:
+            try:
+                self.hotkey_listener.stop()
+            except Exception:
+                pass
+            self.hotkey_listener = None
+        win = tk.Toplevel(self.root)
+        win.title("Set hotkey"); win.geometry("360x120"); win.configure(bg=self.p["bg"])
+        win.transient(self.root); win.grab_set()
+        ttk.Label(win, text="Press the key or combo you want.\n(Esc to cancel)",
+                  justify="center").pack(pady=18)
+        mods = []
+        MOD = {
+            keyboard.Key.ctrl: "<ctrl>", keyboard.Key.ctrl_l: "<ctrl>", keyboard.Key.ctrl_r: "<ctrl>",
+            keyboard.Key.alt: "<alt>", keyboard.Key.alt_l: "<alt>", keyboard.Key.alt_r: "<alt>",
+            keyboard.Key.alt_gr: "<alt>",
+            keyboard.Key.shift: "<shift>", keyboard.Key.shift_l: "<shift>", keyboard.Key.shift_r: "<shift>",
+            keyboard.Key.cmd: "<cmd>", keyboard.Key.cmd_l: "<cmd>", keyboard.Key.cmd_r: "<cmd>",
+        }
+        holder = {"l": None}
+
+        def finish(hk):
+            try:
+                if holder["l"]:
+                    holder["l"].stop()
+            except Exception:
+                pass
+            if win.winfo_exists():
+                win.destroy()
+            if hk is not None:
+                on_done(hk)
+            self.root.after(60, self._update_hotkey_listener)
+
+        def token(key):
+            if isinstance(key, keyboard.KeyCode):
+                if key.char and key.char.isprintable() and not key.char.isspace():
+                    return key.char.lower()
+                if key.vk is not None:
+                    return f"<{key.vk}>"
+                return None
+            if isinstance(key, keyboard.Key):
+                return f"<{key.name}>"
+            return None
+
+        def on_press(key):
+            if key == keyboard.Key.esc:
+                self.root.after(0, lambda: finish(None)); return False
+            if key in MOD:
+                if MOD[key] not in mods:
+                    mods.append(MOD[key])
+                return
+            tok = token(key)
+            if not tok:
+                return
+            order = {"<ctrl>": 0, "<alt>": 1, "<shift>": 2, "<cmd>": 3}
+            parts = sorted(set(mods), key=lambda m: order.get(m, 9)) + [tok]
+            hk = "+".join(parts)
+            self.root.after(0, lambda: finish(hk)); return False
+
+        def on_release(key):
+            if key in MOD and MOD[key] in mods:
+                try:
+                    mods.remove(MOD[key])
+                except ValueError:
+                    pass
+
+        holder["l"] = keyboard.Listener(on_press=on_press, on_release=on_release)
+        holder["l"].start()
+        win.protocol("WM_DELETE_WINDOW", lambda: finish(None))
+
+    def _set_action_hotkey(self, action):
+        def done(hk):
+            self.settings.setdefault("keybinds", {})[action] = hk
+            storage.save_settings(self.settings)
+            self._refresh_keybind_labels()
+        self._capture_hotkey(done)
+
+    def _clear_action_hotkey(self, action):
+        self.settings.setdefault("keybinds", {})[action] = ""
+        storage.save_settings(self.settings)
+        self._refresh_keybind_labels()
+        self._update_hotkey_listener()
+
+    def _refresh_keybind_labels(self):
+        kb = self.settings.get("keybinds", {})
+        for action, var in getattr(self, "kb_vars", {}).items():
+            var.set(kb.get(action, "") or "(none)")
+
+    def _set_sound_hotkey(self):
+        sel = self.sound_list.curselection()
+        if not sel:
+            self.status_var.set("Select a sound first, then Set Hotkey."); return
+        path = self.settings.get("sounds", [])[sel[0]]
+        def done(hk):
+            self.settings.setdefault("sound_binds", {})[path] = hk
+            storage.save_settings(self.settings)
+            self._refresh_sound_list()
+        self._capture_hotkey(done)
+
+    def _clear_sound_hotkey(self):
+        sel = self.sound_list.curselection()
+        if not sel:
+            return
+        path = self.settings.get("sounds", [])[sel[0]]
+        self.settings.get("sound_binds", {}).pop(path, None)
+        storage.save_settings(self.settings)
+        self._refresh_sound_list()
+        self._update_hotkey_listener()
 
     def _on_toggle_hotkeys(self):
         self._save_prefs()
