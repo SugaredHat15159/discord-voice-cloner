@@ -19,7 +19,7 @@ def record_fixed(event_queue, device_index, channels, seconds, speaker):
         stream.stop_stream(); stream.close()
         data = b"".join(frames)
         os.makedirs(CLIPS_DIR, exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         fname = f"clip_{ts}.wav"
         with wave.open(os.path.join(CLIPS_DIR, fname), "wb") as wf:
             wf.setnchannels(channels); wf.setsampwidth(SAMPWIDTH)

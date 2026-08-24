@@ -72,7 +72,7 @@ class AudioEngine:
             self.q.put(("error", "Buffer empty - wait a moment."))
             return
         os.makedirs(CLIPS_DIR, exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         fname = f"clip_{ts}.wav"
         with wave.open(os.path.join(CLIPS_DIR, fname), "wb") as wf:
             wf.setnchannels(self.channels); wf.setsampwidth(SAMPWIDTH)

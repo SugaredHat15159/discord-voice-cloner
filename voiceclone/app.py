@@ -576,11 +576,19 @@ class App:
     # ---------- clip ops ----------
     def _refresh_clip_list(self):
         self.tree.delete(*self.tree.get_children())
+        seen = set()
         for c in self.index:
+            fname = c.get("filename")
+            if not fname or fname in seen:
+                continue          # skip blanks / duplicates instead of crashing
+            seen.add(fname)
             preview = (c.get("transcript", "") or "")[:80]
-            self.tree.insert("", "end", iid=c["filename"], values=(
-                c.get("timestamp", ""), c.get("speaker", ""), c.get("duration", ""),
-                c.get("status", ""), preview))
+            try:
+                self.tree.insert("", "end", iid=fname, values=(
+                    c.get("timestamp", ""), c.get("speaker", ""), c.get("duration", ""),
+                    c.get("status", ""), preview))
+            except Exception:
+                pass              # one bad row can never blank the whole list
 
     def _sel_files(self):
         return list(self.tree.selection())
@@ -728,29 +736,34 @@ class App:
     def _poll(self):
         try:
             while True:
-                kind, payload = self.q.get_nowait()
-                if kind == "status":
-                    self.status_var.set(payload)
-                elif kind == "error":
-                    self.status_var.set("ERROR: " + payload)
-                elif kind == "train_status":
-                    self.train_status.set(payload)
-                elif kind == "new_clip":
-                    self.index.append(payload); storage.save_index(self.index)
-                    self._refresh_clip_list()
-                    self.status_var.set(f"Saved {payload['filename']} ({payload['duration']}s)")
-                    if self.auto_transcribe.get():
-                        self._transcribe_one(payload["filename"])
-                elif kind == "transcript":
-                    fname, text = payload
-                    for c in self.index:
-                        if c["filename"] == fname:
-                            c["transcript"] = text; c["status"] = "done"
-                    storage.save_index(self.index); self._refresh_clip_list()
-        except queue.Empty:
-            pass
-        active = self.engine.running or self.mixer.running
-        self.root.after(120 if active else 500, self._poll)
+                try:
+                    kind, payload = self.q.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    if kind == "status":
+                        self.status_var.set(payload)
+                    elif kind == "error":
+                        self.status_var.set("ERROR: " + payload)
+                    elif kind == "train_status":
+                        self.train_status.set(payload)
+                    elif kind == "new_clip":
+                        self.index.append(payload); storage.save_index(self.index)
+                        self._refresh_clip_list()
+                        self.status_var.set(f"Saved {payload['filename']} ({payload['duration']}s)")
+                        if self.auto_transcribe.get():
+                            self._transcribe_one(payload["filename"])
+                    elif kind == "transcript":
+                        fname, text = payload
+                        for c in self.index:
+                            if c["filename"] == fname:
+                                c["transcript"] = text; c["status"] = "done"
+                        storage.save_index(self.index); self._refresh_clip_list()
+                except Exception as e:
+                    self.status_var.set(f"UI error (recovered): {e}")
+        finally:
+            active = self.engine.running or self.mixer.running
+            self.root.after(120 if active else 500, self._poll)
 
     # ---------- close ----------
     def _on_close(self, restart=False):
