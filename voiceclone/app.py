@@ -107,7 +107,7 @@ class App:
                           ("dur", 55, "Dur"), ("status", 80, "Status"),
                           ("transcript", 470, "Transcript")]:
             self.tree.heading(c, text=lbl); self.tree.column(c, width=w, anchor="w")
-        self.tree.bind("<Double-1>", self._edit_transcript)
+        self.tree.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
         sb.pack(side="right", fill="y"); self.tree.configure(yscrollcommand=sb.set)
 
@@ -336,14 +336,6 @@ class App:
             hk = binds.get(pth)
             self.sound_list.insert("end", f"{name}    [{hk}]" if hk else name)
 
-    def _add_sound(self):
-        path = filedialog.askopenfilename(title="Add sound",
-                                          filetypes=[("Audio", "*.wav *.mp3 *.ogg *.flac"), ("All", "*.*")])
-        if path:
-            self.settings.setdefault("sounds", []).append(path)
-            storage.save_settings(self.settings)
-            self._refresh_sound_list(); self._update_hotkey_listener()
-
     def _open_sound_folder(self):
         folder = os.path.abspath(SOUNDS_DIR)
         os.makedirs(folder, exist_ok=True)
@@ -378,6 +370,14 @@ class App:
         storage.save_settings(self.settings)
         self._refresh_sound_list()
         self._update_hotkey_listener()
+
+    def _add_sound(self):
+        path = filedialog.askopenfilename(title="Add sound",
+                                          filetypes=[("Audio", "*.wav *.mp3 *.ogg *.flac"), ("All", "*.*")])
+        if path:
+            self.settings.setdefault("sounds", []).append(path)
+            storage.save_settings(self.settings)
+            self._refresh_sound_list(); self._update_hotkey_listener()
 
     def _remove_sound(self):
         sel = self.sound_list.curselection()
@@ -623,19 +623,22 @@ class App:
             if not c.get("transcript"):
                 self._transcribe_one(c["filename"])
 
-    def _edit_transcript(self, _event=None):
+    def _edit_transcript(self):
         sel = self._sel_files()
         if not sel:
             return
         clip = self._clip(sel[0])
         if not clip:
             return
-        win = tk.Toplevel(self.root); win.title(f"Edit - {sel[0]}"); win.geometry("560x300")
+        win = tk.Toplevel(self.root)
+        win.title(f"Edit - {sel[0]}")
+        win.geometry("560x300")
         win.configure(bg=self.p["bg"])
-        win.transient(self.root); win.grab_set(); win.lift()
+        win.transient(self.root)
+        win.grab_set()
 
-        # Buttons FIRST, pinned to the bottom, so they can never be pushed off-screen.
-        btns = ttk.Frame(win, padding=(10, 8)); btns.pack(side="bottom", fill="x")
+        btns = ttk.Frame(win, padding=(10, 8))
+        btns.pack(side="bottom", fill="x")
 
         txt = tk.Text(win, wrap="word", relief="flat", bg=self.p["field"],
                       highlightthickness=1, highlightbackground="#d7d9de", font=("Segoe UI", 11))
@@ -643,7 +646,7 @@ class App:
         txt.insert("1.0", clip.get("transcript", ""))
         txt.focus_set()
 
-        def save(_e=None):
+        def save():
             clip["transcript"] = txt.get("1.0", "end").strip()
             clip["status"] = "done"
             storage.save_index(self.index)
@@ -652,11 +655,9 @@ class App:
 
         ttk.Button(btns, text="Save", style="Accent.TButton", command=save).pack(side="right")
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="right", padx=6)
-        ttk.Label(btns, text="Ctrl+S to save  \u2022  Esc to cancel",
-                  style="Muted.TLabel").pack(side="left")
 
-        win.bind("<Control-s>", save)
-        win.bind("<Escape>", lambda _e: win.destroy())
+        win.bind("<Control-s>", lambda e: save())
+        win.bind("<Escape>", lambda e: win.destroy())
 
     def _delete_selected(self):
         sel = self._sel_files()
