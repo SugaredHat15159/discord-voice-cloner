@@ -8,3 +8,5 @@ piper_models/
 *.wav
 .venv/
 sounds/
+trained_models/
+training_output/

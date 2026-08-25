@@ -177,28 +177,29 @@ class App:
     # ---------- training tab ----------
     def _build_train_tab(self):
         f = ttk.Frame(self.tab_train, padding=16); f.pack(fill="both", expand=True)
-        ttk.Label(f, text="Dataset export", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(f, justify="left", style="Muted.TLabel", text=(
-            "Exports one speaker's transcribed clips into a Piper-ready dataset:\n"
-            "   dataset/<speaker>/wav/*.wav   (22050 Hz mono)\n"
-            "   dataset/<speaker>/metadata.csv   (id|transcript)\n\n"
-            "GPU training runs on Google Colab (free) - CPU training is impractical.\n"
-            "Export a dataset, then load the resulting model on the Voice (TTS) tab."
-        )).pack(anchor="w", pady=8)
+        ttk.Label(f, text="Export dataset for training", style="Title.TLabel").pack(anchor="w")
+        msg = (
+            "Export a speaker's transcribed clips into a Piper dataset "
+            "(dataset/<speaker>/wav + metadata.csv).\n\n"
+            "Training runs in WSL/Linux - see PIPER_TRAINING_GUIDE.md. "
+            "Copy the finished model.onnx + model.onnx.json into "
+            "trained_models/<speaker>/ then load it on the Voice (TTS) tab."
+        )
+        ttk.Label(f, justify="left", style="Muted.TLabel", wraplength=620, text=msg).pack(anchor="w", pady=8)
         ttk.Button(f, text="Export Piper Dataset", style="Accent.TButton",
                    command=self._export_dataset).pack(anchor="w", pady=4)
         self.train_status = tk.StringVar(value="")
-        ttk.Label(f, textvariable=self.train_status).pack(anchor="w", pady=6)
+        ttk.Label(f, textvariable=self.train_status, wraplength=620, justify="left").pack(anchor="w", pady=6)
 
-    # ---------- tts tab ----------
     def _build_tts_tab(self):
         f = ttk.Frame(self.tab_tts, padding=16); f.pack(fill="both", expand=True)
         ttk.Label(f, text="Speak with a Piper voice", style="Title.TLabel").pack(anchor="w")
         row = ttk.Frame(f); row.pack(fill="x", pady=(10, 0))
         ttk.Label(row, text="Model (.onnx)").pack(side="left")
         self.tts_model_var = tk.StringVar(value=self.settings.get("tts_model", ""))
-        ttk.Entry(row, textvariable=self.tts_model_var, width=52).pack(side="left", padx=6)
-        ttk.Button(row, text="Browse", command=self._tts_pick_model).pack(side="left")
+        ttk.Entry(row, textvariable=self.tts_model_var, width=46).pack(side="left", padx=6)
+        ttk.Button(row, text="Browse", command=self._tts_pick_model).pack(side="left", padx=1)
+        ttk.Button(row, text="Load Trained", command=self._tts_load_trained).pack(side="left", padx=1)
         ttk.Label(f, text="Text").pack(anchor="w", pady=(10, 2))
         self.tts_text = tk.Text(f, height=5, wrap="word", relief="flat",
                                 bg=self.p["field"], highlightthickness=1,
@@ -686,6 +687,29 @@ class App:
                          daemon=True).start()
 
     # ---------- tts ----------
+    def _tts_load_trained(self):
+        """Load a trained model from trained_models/<speaker>/"""
+        import os
+        trained_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "trained_models")
+        if not os.path.exists(trained_dir):
+            messagebox.showinfo("No trained models", f"No 'trained_models' folder found.\nTrain a voice first on the Training tab.")
+            return
+        speakers = [d for d in os.listdir(trained_dir) if os.path.isdir(os.path.join(trained_dir, d))]
+        if not speakers:
+            messagebox.showinfo("No trained models", "No trained models found in trained_models/")
+            return
+        speaker = simpledialog.askstring("Load trained model", f"Available voices:\n{', '.join(speakers)}", initialvalue=speakers[0] if speakers else "")
+        if not speaker:
+            return
+        model_path = os.path.join(trained_dir, speaker, "model.onnx")
+        if os.path.exists(model_path):
+            self.settings["tts_model"] = model_path
+            storage.save_settings(self.settings)
+            self.tts_model_var.set(model_path)
+            self.status_var.set(f"Loaded trained voice: {speaker}")
+        else:
+            messagebox.showerror("Not found", f"model.onnx not found in trained_models/{speaker}/")
+
     def _tts_pick_model(self):
         p = filedialog.askopenfilename(title="Piper model",
                                        filetypes=[("ONNX", "*.onnx"), ("All", "*.*")])
