@@ -15,6 +15,7 @@ _DEFAULT_SETTINGS = {
     "keybinds": {"capture": "<ctrl>+<shift>+c", "stop_sounds": ""},
     "sound_binds": {},
     "pitch_semitones": 0,
+    "pitch_enabled": False,
     "pitch_presets": {"Normal": 0, "Chipmunk": 7, "Deep": -7},
     "tts_model": "",
 }

@@ -49,6 +49,7 @@ class App:
         self.tab_board = ttk.Frame(nb);   nb.add(self.tab_board, text="  Soundboard  ")
         self.tab_train = ttk.Frame(nb);   nb.add(self.tab_train, text="  Training  ")
         self.tab_tts = ttk.Frame(nb);     nb.add(self.tab_tts, text="  Voice (TTS)  ")
+        self.tab_pitch = ttk.Frame(nb);   nb.add(self.tab_pitch, text="  Pitch  ")
         self.tab_set = ttk.Frame(nb);     nb.add(self.tab_set, text="  Settings  ")
 
         self.status_var = tk.StringVar(value=f"Ready.   Capture hotkey: {CAPTURE_HOTKEY}")
@@ -59,6 +60,7 @@ class App:
         self._build_board_tab()
         self._build_train_tab()
         self._build_tts_tab()
+        self._build_pitch_tab()
         self._build_settings_tab()
 
         self._refresh_devices()
@@ -214,7 +216,109 @@ class App:
             "'Speak into Discord' routes through the Soundboard mixer, so start the mixer first."
         )).pack(anchor="w", pady=4)
 
-    # ---------- settings tab ----------
+    def _hotkey_toggle_pitch(self):
+        self.pitch_enabled_var.set(not self.pitch_enabled_var.get())
+        self._on_pitch_toggle()
+
+    # ---------- pitch tab ----------
+    def _build_pitch_tab(self):
+        f = ttk.Frame(self.tab_pitch, padding=16); f.pack(fill="both", expand=True)
+        ttk.Label(f, text="Voice pitch modulator", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(f, style="Muted.TLabel", wraplength=620, justify="left", text=(
+            "Shifts your mic pitch in real time (routes through the Soundboard mixer, "
+            "so start the mixer to use it in Discord). Small shifts sound natural; "
+            "big shifts get chipmunk/demon character."
+        )).pack(anchor="w", pady=(4, 10))
+
+        self.pitch_enabled_var = tk.BooleanVar(value=self.settings.get("pitch_enabled", False))
+        ttk.Checkbutton(f, text="Pitch shifting ON", variable=self.pitch_enabled_var,
+                        command=self._on_pitch_toggle).pack(anchor="w")
+
+        row = ttk.Frame(f); row.pack(fill="x", pady=8)
+        ttk.Label(row, text="Semitones", width=10).pack(side="left")
+        self.pitch_var = tk.DoubleVar(value=self.settings.get("pitch_semitones", 0))
+        ttk.Scale(row, from_=-12, to=12, orient="horizontal", variable=self.pitch_var,
+                  command=self._on_pitch_change).pack(side="left", fill="x", expand=True, padx=10)
+        self.pitch_lbl = ttk.Label(row, text=f"{int(self.pitch_var.get())}", width=5)
+        self.pitch_lbl.pack(side="left")
+
+        pf = ttk.Labelframe(f, text="Presets", padding=10); pf.pack(fill="both", expand=True, pady=10)
+        self.pitch_preset_list = tk.Listbox(pf, height=8, relief="flat", bg=self.p["field"],
+                                            highlightthickness=1, highlightbackground="#d7d9de",
+                                            font=("Segoe UI", 10))
+        self.pitch_preset_list.pack(side="left", fill="both", expand=True)
+        self.pitch_preset_list.bind("<<ListboxSelect>>", self._on_pitch_preset_pick)
+        sb = ttk.Scrollbar(pf, orient="vertical", command=self.pitch_preset_list.yview)
+        sb.pack(side="right", fill="y"); self.pitch_preset_list.configure(yscrollcommand=sb.set)
+
+        bar = ttk.Frame(f); bar.pack(fill="x")
+        ttk.Button(bar, text="Save current as preset", command=self._pitch_save_preset).pack(side="left", padx=3)
+        ttk.Button(bar, text="Delete preset", style="Danger.TButton",
+                   command=self._pitch_delete_preset).pack(side="left", padx=3)
+        ttk.Label(bar, style="Muted.TLabel",
+                  text="Hotkeys for pitch are on the Settings tab.").pack(side="right")
+
+        self._refresh_pitch_presets()
+
+    def _refresh_pitch_presets(self):
+        self.pitch_preset_list.delete(0, "end")
+        for name, semi in self.settings.get("pitch_presets", {}).items():
+            self.pitch_preset_list.insert("end", f"{name}   ({semi:+g})")
+
+    def _on_pitch_toggle(self):
+        on = self.pitch_enabled_var.get()
+        self.settings["pitch_enabled"] = on
+        storage.save_settings(self.settings)
+        self.mixer.set_pitch_semitones(self.pitch_var.get() if on else 0)
+        self.status_var.set(f"Pitch shifting {'ON' if on else 'OFF'}.")
+
+    def _on_pitch_change(self, _=None):
+        semi = int(float(self.pitch_var.get()))
+        self.pitch_lbl.config(text=str(semi))
+        self.settings["pitch_semitones"] = semi
+        storage.save_settings(self.settings)
+        if self.pitch_enabled_var.get():
+            self.mixer.set_pitch_semitones(semi)
+
+    def _on_pitch_preset_pick(self, _=None):
+        sel = self.pitch_preset_list.curselection()
+        if not sel:
+            return
+        name = list(self.settings.get("pitch_presets", {}).keys())[sel[0]]
+        self._apply_pitch_preset(name)
+
+    def _apply_pitch_preset(self, name):
+        presets = self.settings.get("pitch_presets", {})
+        if name not in presets:
+            return
+        semi = presets[name]
+        self.pitch_var.set(semi)
+        self.pitch_lbl.config(text=str(int(semi)))
+        self.settings["pitch_semitones"] = semi
+        storage.save_settings(self.settings)
+        if self.pitch_enabled_var.get():
+            self.mixer.set_pitch_semitones(semi)
+        self.status_var.set(f"Pitch preset: {name} ({semi:+g})")
+
+    def _pitch_save_preset(self):
+        name = simpledialog.askstring("Save preset", "Preset name:")
+        if not name:
+            return
+        self.settings.setdefault("pitch_presets", {})[name] = int(float(self.pitch_var.get()))
+        storage.save_settings(self.settings)
+        self._refresh_pitch_presets()
+
+    def _pitch_delete_preset(self):
+        sel = self.pitch_preset_list.curselection()
+        if not sel:
+            return
+        name = list(self.settings.get("pitch_presets", {}).keys())[sel[0]]
+        self.settings.get("pitch_presets", {}).pop(name, None)
+        storage.save_settings(self.settings)
+        self._refresh_pitch_presets()
+        self._update_hotkey_listener()
+
+        # ---------- settings tab ----------
     def _build_settings_tab(self):
         f = ttk.Frame(self.tab_set, padding=16); f.pack(fill="both", expand=True)
 
@@ -228,7 +332,7 @@ class App:
 
         kbf = ttk.Labelframe(f, text="Keybinds", padding=10); kbf.pack(fill="x", pady=(0, 12))
         self.kb_vars = {}
-        for action, label in [("capture", "Grab clip"), ("stop_sounds", "Stop sounds")]:
+        for action, label in [("capture", "Grab clip"), ("stop_sounds", "Stop sounds"), ("pitch_toggle", "Toggle pitch")]:
             row = ttk.Frame(kbf); row.pack(fill="x", pady=2)
             ttk.Label(row, text=label, width=14).pack(side="left")
             var = tk.StringVar(); self.kb_vars[action] = var
@@ -236,7 +340,15 @@ class App:
             ttk.Button(row, text="Set", command=lambda a=action: self._set_action_hotkey(a)).pack(side="left", padx=3)
             ttk.Button(row, text="Clear", command=lambda a=action: self._clear_action_hotkey(a)).pack(side="left")
         ttk.Label(kbf, style="Muted.TLabel",
-                  text="Per-sound hotkeys: on the Soundboard tab, pick a sound then Set Hotkey.").pack(anchor="w", pady=(6, 0))
+                  text="Per-sound hotkeys: Soundboard tab -> pick a sound -> Set Hotkey.").pack(anchor="w", pady=(6, 0))
+
+        prow = ttk.Frame(kbf); prow.pack(fill="x", pady=(8, 0))
+        ttk.Label(prow, text="Pitch preset", width=14).pack(side="left")
+        self.pitch_bind_combo = ttk.Combobox(prow, width=18, state="readonly")
+        self.pitch_bind_combo.pack(side="left", padx=4)
+        ttk.Button(prow, text="Set", command=self._set_pitch_preset_hotkey).pack(side="left", padx=3)
+        ttk.Button(prow, text="Clear", command=self._clear_pitch_preset_hotkey).pack(side="left")
+        self._refresh_pitch_bind_combo()
         self._refresh_keybind_labels()
 
         up = ttk.Labelframe(f, text="Updates", padding=10); up.pack(fill="x")
@@ -312,6 +424,7 @@ class App:
         mon = audio_utils.default_output_index() if self.monitor_var.get() else None
         self.mixer.set_mic_gain_percent(self.mic_gain_var.get())
         self.mixer.set_sound_gain_percent(self.sound_gain_var.get())
+        self.mixer.set_pitch_semitones(self.settings.get('pitch_semitones', 0) if self.settings.get('pitch_enabled') else 0)
         if self.mixer.start(mic[0], cable[0], mon):
             self.mixer_btn.config(text="Stop Mixer")
         self._update_hotkey_listener()
@@ -432,6 +545,9 @@ class App:
                 lambda: self.engine.save_last_clip(self.speaker_var.get()))
         if self.mixer.running:
             add(kb.get("stop_sounds", ""), self.mixer.stop_all_sounds)
+            add(kb.get("pitch_toggle", ""), self._hotkey_toggle_pitch)
+            for pname, pk in self.settings.get("pitch_preset_binds", {}).items():
+                add(pk, (lambda n=pname: self._apply_pitch_preset(n)))
             for path, hk in self.settings.get("sound_binds", {}).items():
                 add(hk, (lambda p=path: self._play_path(p)))
             if self.enable_sound_hotkeys.get():
@@ -539,6 +655,30 @@ class App:
         kb = self.settings.get("keybinds", {})
         for action, var in getattr(self, "kb_vars", {}).items():
             var.set(kb.get(action, "") or "(none)")
+
+    def _refresh_pitch_bind_combo(self):
+        names = list(self.settings.get("pitch_presets", {}).keys())
+        self.pitch_bind_combo["values"] = names
+        if names and not self.pitch_bind_combo.get():
+            self.pitch_bind_combo.current(0)
+
+    def _set_pitch_preset_hotkey(self):
+        name = self.pitch_bind_combo.get()
+        if not name:
+            self.status_var.set("Pick a pitch preset first."); return
+        def done(hk):
+            self.settings.setdefault("pitch_preset_binds", {})[name] = hk
+            storage.save_settings(self.settings)
+            self.status_var.set(f"Bound {hk} -> pitch preset '{name}'")
+        self._capture_hotkey(done)
+
+    def _clear_pitch_preset_hotkey(self):
+        name = self.pitch_bind_combo.get()
+        if name:
+            self.settings.get("pitch_preset_binds", {}).pop(name, None)
+            storage.save_settings(self.settings)
+            self._update_hotkey_listener()
+            self.status_var.set(f"Cleared hotkey for '{name}'")
 
     def _set_sound_hotkey(self):
         sel = self.sound_list.curselection()

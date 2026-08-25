@@ -30,6 +30,50 @@ def _resample_linear(x, src, dst):
     return np.interp(src_idx, np.arange(len(x)), x).astype(np.float32)
 
 
+def _pitch_shift(x, semitones, rate):
+    """Granular (overlap-add) pitch shift of a mono float array.
+    Preserves duration (tempo) so it stays in sync for a live mic.
+    Good for +/- a few semitones; larger shifts get 'chipmunk'/'demon' character.
+    Returns an array the SAME length as x. Falls back to x on any error.
+    """
+    if not semitones or len(x) == 0:
+        return x
+    try:
+        ratio = float(2.0 ** (semitones / 12.0))
+        n = len(x)
+        # grain ~ 30ms, hop = grain/4 for overlap-add
+        grain = max(256, int(rate * 0.03))
+        hop = grain // 4
+        win = np.hanning(grain).astype(np.float32)
+        out = np.zeros(n, dtype=np.float32)
+        norm = np.zeros(n, dtype=np.float32)
+        # read positions advance at 'ratio' so pitch changes, write advances at hop
+        read_pos = 0.0
+        wp = 0
+        idx = np.arange(grain)
+        while wp + grain <= n:
+            r0 = int(read_pos)
+            frac = read_pos - r0
+            if r0 + grain + 1 <= n:
+                a = x[r0:r0 + grain]
+                b = x[r0 + 1:r0 + grain + 1]
+                seg = (a * (1.0 - frac) + b * frac)
+            else:
+                seg = x[r0:r0 + grain]
+                if len(seg) < grain:
+                    seg = np.pad(seg, (0, grain - len(seg)))
+            out[wp:wp + grain] += seg * win
+            norm[wp:wp + grain] += win
+            wp += hop
+            read_pos += hop * ratio
+            if read_pos + grain >= n:
+                read_pos = max(0.0, n - grain - 1)
+        norm[norm < 1e-6] = 1.0
+        return (out / norm).astype(np.float32)
+    except Exception:
+        return x
+
+
 class MixerEngine:
     def __init__(self, event_queue):
         self.q = event_queue
@@ -43,6 +87,7 @@ class MixerEngine:
         self.out_rate = None
         self.mon_rate = None
         self.mic_gain = 1.0
+        self.pitch_semitones = 0.0
         self.sound_gain = 1.0
         self._cache = {}       # (path, rate) -> mono float32 (int16 scale)
         self._active = []      # [ [data, pos], ... ]
@@ -50,6 +95,12 @@ class MixerEngine:
 
     def set_mic_gain_percent(self, pct):
         self.mic_gain = max(0.0, pct / 100.0)
+
+    def set_pitch_semitones(self, semi):
+        try:
+            self.pitch_semitones = float(semi)
+        except Exception:
+            self.pitch_semitones = 0.0
 
     def set_sound_gain_percent(self, pct):
         self.sound_gain = max(0.0, pct / 100.0)
@@ -141,6 +192,8 @@ class MixerEngine:
             n = len(mix)
             if n == 0:
                 continue
+            if self.pitch_semitones:
+                mix = _pitch_shift(mix, self.pitch_semitones, self.out_rate)
             mix = mix * self.mic_gain
             with self._lock:
                 still = []
