@@ -1,0 +1,156 @@
+PIPER VOICE DATASET — READING SCRIPT
+=====================================
+How to use:
+- Set Capture tab device to your MIC, Speaker = your name, Buffer ~10s.
+- Click Record Now, read ONE numbered line clearly, let it save. Repeat.
+- Quiet room, steady distance, natural pace. Don't rush the ends of sentences.
+- After recording, FIX each transcript to match exactly what you said.
+- ~150-200 clean lines is a strong dataset.
+
+Read naturally — like you're talking in a call, not like a news anchor.
+
+--- EVERYDAY / NATURAL ---
+1. Hey, what's up? You good?
+2. Yeah, give me like two seconds.
+3. I honestly have no idea what happened there.
+4. Okay that actually makes a lot of sense.
+5. Wait, say that again, I wasn't listening.
+6. Let me check real quick and I'll let you know.
+7. That's exactly what I was thinking.
+8. No way, are you serious right now?
+9. Alright, I'm heading out in a minute.
+10. Can you hear me okay? My mic's been weird.
+
+--- QUESTIONS (rising intonation coverage) ---
+11. Are you coming tonight or not?
+12. Which one do you actually want?
+13. Did you finish it yet?
+14. Why would they even do that?
+15. How long is this gonna take?
+16. What time are we starting?
+17. You want me to grab it for you?
+18. Where did everybody go?
+19. Is that seriously the plan?
+20. Who told you that?
+
+--- CASUAL / PROFANITY (natural, not shouted) ---
+21. Oh shit, I completely forgot about that.
+22. What the fuck was that noise?
+23. That's such bullshit, honestly.
+24. Damn, that's actually impressive.
+25. Are you fucking kidding me right now?
+26. This is a goddamn mess.
+27. Holy shit, that worked.
+28. I don't give a shit either way.
+29. That scared the hell out of me.
+30. Well, shit happens I guess.
+31. Stop being an ass about it.
+32. That's a hell of a lot of work.
+33. Quit fucking around and help me.
+34. Man, that pissed me off so bad.
+35. Screw it, let's just do it.
+
+--- EMOTIONAL RANGE (excited) ---
+36. Let's go, that was amazing!
+37. Oh my god that's incredible!
+38. I can't believe we actually did it!
+39. That's the best thing I've heard all day!
+40. Yes! Finally! It works!
+
+--- EMOTIONAL RANGE (calm / flat) ---
+41. It's fine, don't worry about it.
+42. I'm just tired, that's all.
+43. Whatever works for you is fine with me.
+44. I'll deal with it tomorrow.
+45. Take your time, there's no rush.
+
+--- EMOTIONAL RANGE (annoyed) ---
+46. Seriously, again? Come on.
+47. I already told you three times.
+48. Can you just listen for one second?
+49. This is so annoying I swear.
+50. Ugh, why does this always happen to me?
+
+--- NUMBERS / TIME / DATES ---
+51. It's about three fifteen in the afternoon.
+52. Call me back at seven thirty tonight.
+53. There were like twenty-seven people there.
+54. It costs forty-nine ninety-nine.
+55. My number ends in six four two eight.
+56. We leave on the twenty-first of March.
+57. That's roughly a hundred and fifty bucks.
+58. Give it eight to ten minutes.
+59. I've told you a thousand times.
+60. It happened back in nineteen ninety-eight.
+
+--- HARD PHONEMES (th, sh, ch, s clusters) ---
+61. The three thieves thought through their theft.
+62. She sells seashells by the seashore.
+63. Which witch watched the wristwatch?
+64. Fresh thread through the thick cloth.
+65. Six slick slippery snakes slid slowly.
+66. The sixth sheikh's sixth sheep is sick.
+67. Thoroughly thankful for this thing.
+68. Chocolate chip cheesecake chunks.
+69. Crisp crusts crackle in the kitchen.
+70. Strengths and lengths of the strings.
+
+--- COMMON GAMING / DISCORD PHRASES ---
+71. I'm reloading, cover me.
+72. Behind you, watch out!
+73. Nice shot, that was clean.
+74. I'm out of ammo, need backup.
+75. Regroup at the point.
+76. Push left, I'll flank right.
+77. Somebody's camping the corner.
+78. Good game everyone, that was close.
+79. Mute yourself, there's an echo.
+80. Can everyone hear the music?
+
+--- LONGER SENTENCES (prosody / breathing) ---
+81. So I was thinking, if we start a little earlier tomorrow, we might actually have enough time to finish everything before it gets dark.
+82. The whole point is that nobody really knows what's going to happen, so we should probably just plan for the worst and hope for the best.
+83. Honestly, after everything that went wrong last week, I'm just glad we finally got it working the way it was supposed to.
+84. If you keep pressing that button without waiting for it to load, it's going to crash again just like it did before.
+85. I've been trying to explain this for the last ten minutes, but it feels like nobody's actually paying attention to what I'm saying.
+
+--- MIXED / TONGUE TWISTERS ---
+86. Red leather, yellow leather, red leather, yellow leather.
+87. Unique New York, you know you need unique New York.
+88. Peter Piper picked a peck of pickled peppers.
+89. How much wood would a woodchuck chuck?
+90. A proper copper coffee pot.
+
+--- SHORT REACTIONS (for snappy TTS) ---
+91. Nope.
+92. Absolutely not.
+93. For real?
+94. Let's do it.
+95. My bad.
+96. Hell yeah.
+97. Not a chance.
+98. Same here.
+99. On my way.
+100. Give me a sec.
+
+--- EXTRA VARIETY (repeat the above styles for more coverage) ---
+101. Dude, you would not believe the day I just had.
+102. I swear to god if this crashes one more time.
+103. Okay okay, calm down, I got it handled.
+104. That's actually kind of genius, not gonna lie.
+105. Why is it always the one thing you forget?
+106. Let me just double-check that real fast.
+107. Fuck it, we'll figure it out as we go.
+108. That's the dumbest shit I've ever heard, no offense.
+109. Alright, who's ready to actually get started?
+110. I need coffee before I can deal with any of this.
+111. Turn it down a little, it's way too loud.
+112. Send me the link and I'll take a look.
+113. We've got maybe fifteen minutes before this thing starts.
+114. I'm not even mad, I'm just impressed.
+115. Do you want the good news or the bad news first?
+116. That came out of absolutely nowhere.
+117. Just trust me on this one, okay?
+118. It's not broken, you're just doing it wrong.
+119. Well that's one way to do it, I guess.
+120. Let's not do that again, ever.
