@@ -558,8 +558,19 @@ class App:
                     if n - 1 < len(sounds) and hk not in bound:
                         add(hk, (lambda i=n - 1: self._play_sound(i)))
         if mapping:
+            # Build resiliently: if one hotkey is malformed, drop just that one
+            # instead of letting it kill the whole listener (which used to break
+            # all the sound binds after the pitch update).
+            good = {}
+            for hk, fn in mapping.items():
+                try:
+                    test = keyboard.GlobalHotKeys({hk: fn})
+                    test.stop()
+                    good[hk] = fn
+                except Exception:
+                    self.q.put(("error", f"Skipping bad hotkey: {hk}"))
             try:
-                self.hotkey_listener = keyboard.GlobalHotKeys(mapping)
+                self.hotkey_listener = keyboard.GlobalHotKeys(good)
                 self.hotkey_listener.start()
             except Exception as e:
                 self.q.put(("error", f"Hotkey setup failed: {e}"))
