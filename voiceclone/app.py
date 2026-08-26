@@ -12,6 +12,7 @@ from . import audio_utils, storage, updater, dataset, tts, recorder
 from .capture import AudioEngine
 from .transcribe import Transcriber
 from .mixer import MixerEngine
+from .hotkeys import HotkeyManager, label_for, tokens_from_pynput_string, normalize, MODS
 
 try:
     import winsound
@@ -35,7 +36,8 @@ class App:
         self.engine = AudioEngine(self.q)
         self.transcriber = Transcriber(self.q)
         self.mixer = MixerEngine(self.q)
-        self.hotkey_listener = None
+        self.hotkey_mgr = HotkeyManager()
+        self._migrate_hotkeys()
 
         # shared toggle vars
         self.auto_transcribe = tk.BooleanVar(value=self.settings.get("auto_transcribe", True))
@@ -448,7 +450,7 @@ class App:
         for pth in self.settings.get("sounds", []):
             name = os.path.basename(pth)
             hk = binds.get(pth)
-            self.sound_list.insert("end", f"{name}    [{hk}]" if hk else name)
+            self.sound_list.insert("end", f"{name}    [{label_for(hk)}]" if hk else name)
 
     def _open_sound_folder(self):
         folder = os.path.abspath(SOUNDS_DIR)
@@ -519,72 +521,58 @@ class App:
         self.mixer.trigger(path)
 
     # ---------- hotkeys ----------
-    def _update_hotkey_listener(self):
-        from pynput import keyboard
-        if self.hotkey_listener:
-            try:
-                self.hotkey_listener.stop()
-            except Exception:
-                pass
-            self.hotkey_listener = None
-        mapping = {}
+    def _migrate_hotkeys(self):
+        """Convert any old pynput-string binds to the new token format once."""
+        changed = False
+        kb = self.settings.setdefault("keybinds", {})
+        for k in ("capture", "stop_sounds", "pitch_toggle"):
+            v = kb.get(k)
+            if isinstance(v, str):
+                kb[k] = tokens_from_pynput_string(v); changed = True
+        for dct in ("sound_binds", "pitch_preset_binds"):
+            d = self.settings.setdefault(dct, {})
+            for key, v in list(d.items()):
+                if isinstance(v, str):
+                    d[key] = tokens_from_pynput_string(v); changed = True
+        if changed:
+            storage.save_settings(self.settings)
 
-        def add(hk, fn):
-            if not hk:
-                return
-            try:
-                keyboard.HotKey.parse(hk)   # validate
-            except Exception:
-                self.q.put(("error", f"Ignoring invalid hotkey: {hk}"))
-                return
-            mapping[hk] = fn
+    def _update_hotkey_listener(self):
+        self.hotkey_mgr.stop()
+        binds = []
+
+        def add(tokens, fn):
+            if tokens:
+                # run the callback on the Tk main thread (safe for UI updates)
+                binds.append((tokens, (lambda f=fn: self.root.after(0, f))))
 
         kb = self.settings.get("keybinds", {})
         if self.engine.running and self.enable_capture_hotkey.get():
-            add(kb.get("capture", CAPTURE_HOTKEY),
-                lambda: self.engine.save_last_clip(self.speaker_var.get()))
+            add(kb.get("capture"), lambda: self.engine.save_last_clip(self.speaker_var.get()))
         if self.mixer.running:
-            add(kb.get("stop_sounds", ""), self.mixer.stop_all_sounds)
-            add(kb.get("pitch_toggle", ""), self._hotkey_toggle_pitch)
-            for pname, pk in self.settings.get("pitch_preset_binds", {}).items():
-                add(pk, (lambda n=pname: self._apply_pitch_preset(n)))
-            for path, hk in self.settings.get("sound_binds", {}).items():
-                add(hk, (lambda p=path: self._play_path(p)))
+            add(kb.get("stop_sounds"), self.mixer.stop_all_sounds)
+            add(kb.get("pitch_toggle"), self._hotkey_toggle_pitch)
+            for pname, ptok in self.settings.get("pitch_preset_binds", {}).items():
+                add(ptok, (lambda n=pname: self._apply_pitch_preset(n)))
+            for path, tok in self.settings.get("sound_binds", {}).items():
+                add(tok, (lambda p=path: self._play_path(p)))
             if self.enable_sound_hotkeys.get():
                 sounds = self.settings.get("sounds", [])
-                bound = set(self.settings.get("sound_binds", {}).values())
+                taken = [tuple(sorted(t)) for t in self.settings.get("sound_binds", {}).values() if t]
                 for n in range(1, 10):
-                    hk = f"<ctrl>+<alt>+{n}"
-                    if n - 1 < len(sounds) and hk not in bound:
-                        add(hk, (lambda i=n - 1: self._play_sound(i)))
-        if mapping:
-            # Build resiliently: if one hotkey is malformed, drop just that one
-            # instead of letting it kill the whole listener (which used to break
-            # all the sound binds after the pitch update).
-            good = {}
-            for hk, fn in mapping.items():
-                try:
-                    test = keyboard.GlobalHotKeys({hk: fn})
-                    test.stop()
-                    good[hk] = fn
-                except Exception:
-                    self.q.put(("error", f"Skipping bad hotkey: {hk}"))
-            try:
-                self.hotkey_listener = keyboard.GlobalHotKeys(good)
-                self.hotkey_listener.start()
-            except Exception as e:
-                self.q.put(("error", f"Hotkey setup failed: {e}"))
-                self.hotkey_listener = None
+                    tokens = ["ctrl", "alt", f"vk{48 + n}"]   # Ctrl+Alt+ top-row 1..9
+                    if n - 1 < len(sounds) and tuple(sorted(tokens)) not in taken:
+                        add(tokens, (lambda i=n - 1: self._play_sound(i)))
+        try:
+            self.hotkey_mgr.set_binds(binds)
+            self.hotkey_mgr.start()
+        except Exception as e:
+            self.q.put(("error", f"Hotkey setup failed: {e}"))
 
     # ---------- hotkey capture / binding ----------
     def _capture_hotkey(self, on_done):
         from pynput import keyboard
-        if self.hotkey_listener:
-            try:
-                self.hotkey_listener.stop()
-            except Exception:
-                pass
-            self.hotkey_listener = None
+        self.hotkey_mgr.stop()
         win = tk.Toplevel(self.root)
         win.title("Set hotkey"); win.geometry("360x120"); win.configure(bg=self.p["bg"])
         win.transient(self.root); win.grab_set()
@@ -614,10 +602,16 @@ class App:
 
         def token(key):
             if isinstance(key, keyboard.KeyCode):
+                vk = key.vk
+                # Numpad block: bind by virtual-key code so it matches the numpad
+                # key exactly (numpad 9 types "9" but has a distinct vk; without
+                # this it would bind the main-row 9 and never fire).
+                if vk is not None and 96 <= vk <= 111:
+                    return f"<{vk}>"
                 if key.char and key.char.isprintable() and not key.char.isspace():
                     return key.char.lower()
-                if key.vk is not None:
-                    return f"<{key.vk}>"
+                if vk is not None:
+                    return f"<{vk}>"
                 return None
             if isinstance(key, keyboard.Key):
                 return f"<{key.name}>"
@@ -680,7 +674,7 @@ class App:
         def done(hk):
             self.settings.setdefault("pitch_preset_binds", {})[name] = hk
             storage.save_settings(self.settings)
-            self.status_var.set(f"Bound {hk} -> pitch preset '{name}'")
+            self.status_var.set(f"Bound {label_for(hk)} -> pitch preset {name!r}")
         self._capture_hotkey(done)
 
     def _clear_pitch_preset_hotkey(self):
@@ -944,8 +938,7 @@ class App:
     # ---------- close ----------
     def _on_close(self, restart=False):
         try:
-            if self.hotkey_listener:
-                self.hotkey_listener.stop()
+            self.hotkey_mgr.stop()
             self.engine.terminate()
             self.mixer.terminate()
             audio_utils.release_pa()
