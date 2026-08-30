@@ -19,6 +19,7 @@ _DEFAULT_SETTINGS = {
     "pitch_enabled": False,
     "pitch_presets": {"Normal": 0, "Chipmunk": 7, "Deep": -7},
     "tts_model": "",
+    "tts_length_scale": 1.0,
 }
 
 

@@ -209,6 +209,16 @@ class App:
                                 bg=self.p["field"], highlightthickness=1,
                                 highlightbackground="#d7d9de", font=("Segoe UI", 10))
         self.tts_text.pack(fill="x")
+
+        speed = ttk.Frame(f); speed.pack(fill="x", pady=(8, 0))
+        ttk.Label(speed, text="Speed", width=8).pack(side="left")
+        # length_scale: higher = slower. Slider shows speed, so invert for label.
+        self.tts_speed_var = tk.DoubleVar(value=self.settings.get("tts_length_scale", 1.0))
+        ttk.Scale(speed, from_=0.5, to=2.0, orient="horizontal", variable=self.tts_speed_var,
+                  command=self._on_tts_speed).pack(side="left", fill="x", expand=True, padx=10)
+        self.tts_speed_lbl = ttk.Label(speed, text=f"{self.tts_speed_var.get():.2f}x slower", width=12)
+        self.tts_speed_lbl.pack(side="left")
+
         bar = ttk.Frame(f); bar.pack(fill="x", pady=8)
         ttk.Button(bar, text="Speak into Discord", style="Accent.TButton",
                    command=self._tts_speak_discord).pack(side="left", padx=3)
@@ -862,11 +872,18 @@ class App:
             self.settings["tts_model"] = p; storage.save_settings(self.settings)
             self.tts_model_var.set(p)
 
+    def _on_tts_speed(self, _=None):
+        v = round(float(self.tts_speed_var.get()), 2)
+        self.tts_speed_lbl.config(text=f"{v:.2f} (higher=slower)")
+        self.settings["tts_length_scale"] = v
+        storage.save_settings(self.settings)
+
     def _tts_run(self, then_discord):
         def worker():
             try:
                 out = tts.generate(self.settings.get("tts_model", ""),
-                                   self.tts_text.get("1.0", "end"))
+                                   self.tts_text.get("1.0", "end"),
+                                   length_scale=self.settings.get("tts_length_scale", 1.0))
             except Exception as e:
                 self.q.put(("error", f"TTS failed: {e}")); return
             if then_discord:
